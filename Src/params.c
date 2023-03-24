@@ -475,6 +475,15 @@ static initparam argvparam_pm = IPDEF9("", &pparams, NULL, \
 	((V) && (!(V)->pm || ((V)->pm->node.flags & PM_UNSET) || \
 		 !(V)->pm->node.nam || !*(V)->pm->node.nam))
 
+/*
+ * For named references.  Simple named references are just like scalars
+ * for efficiency, but special named references need get/set functions.
+ */
+#define GETREFNAME(PM) (((PM)->node.flags & PM_SPECIAL) ?	\
+			(PM)->gsu.s->getfn(PM) : (PM)->u.str)
+#define SETREFNAME(PM,S) (((PM)->node.flags & PM_SPECIAL) ?		\
+			  (PM)->gsu.s->setfn(PM,(S)) : ((PM)->u.str = (S)))
+
 static Param argvparam;
 
 /* "parameter table" - hash table containing the parameters
@@ -520,7 +529,7 @@ getparamnode(HashTable ht, const char *nam)
     HashNode hn = gethashnode2(ht, nam);
     Param pm = (Param) hn;
 
-    if (pm && pm->u.str && (pm->node.flags & PM_AUTOLOAD)) {
+    if (pm && (pm->node.flags & PM_AUTOLOAD) && pm->u.str) {
 	char *mn = dupstring(pm->u.str);
 
 	(void)ensurefeature(mn, "p:", (pm->node.flags & PM_AUTOALL) ? NULL :
@@ -536,6 +545,9 @@ getparamnode(HashTable ht, const char *nam)
 		 nam);
 	}
     }
+
+    if (hn && ht == realparamtab)
+	hn = resolve_nameref((Param)hn, NULL);
     return hn;
 }
 
@@ -732,7 +744,7 @@ split_env_string(char *env, char **name, char **value)
 
     tenv = strcpy(zhalloc(strlen(env) + 1), env);
     for (str = tenv; *str && *str != '='; str++) {
-	if (STOUC(*str) >= 128) {
+	if ((unsigned char) *str >= 128) {
 	    /*
 	     * We'll ignore environment variables with names not
 	     * from the portable character set since we don't
@@ -993,6 +1005,35 @@ createparam(char *name, int flags)
 			 gethashnode2(paramtab, name) :
 			 paramtab->getnode(paramtab, name));
 
+	if (oldpm && (oldpm->node.flags & PM_NAMEREF) &&
+	    !(flags & PM_NAMEREF) && (oldpm = upscope(oldpm, oldpm->base))) {
+	    Param lastpm;
+	    struct asgment stop;
+	    stop.flags = PM_NAMEREF | (flags & PM_LOCAL);
+	    stop.name = oldpm->node.nam;
+	    stop.value.scalar = GETREFNAME(oldpm);
+	    lastpm = (Param)resolve_nameref(oldpm, &stop);
+	    if (lastpm) {
+		if (lastpm->node.flags & PM_NAMEREF) {
+		    char *refname = GETREFNAME(lastpm);
+		    if (refname && *refname) {
+			name = refname;
+			oldpm = NULL;
+		    } else {
+			if (!(lastpm->node.flags & PM_READONLY))
+			    lastpm->node.flags |= PM_UNSET;
+			return lastpm;
+		    }
+		} else {
+		    /* nameref pointing to an unset local */
+		    DPUTS(!(lastpm->node.flags & PM_UNSET),
+			  "BUG: local parameter is not unset");
+		    oldpm = lastpm;
+		}
+	    } else
+		flags |= PM_NAMEREF;
+	}
+
 	DPUTS(oldpm && oldpm->level > locallevel,
 	      "BUG: old local parameter not deleted");
 	if (oldpm && (oldpm->level == locallevel || !(flags & PM_LOCAL))) {
@@ -1192,7 +1233,7 @@ isident(char *s)
 		break;
     } else {
 	/* Find the first character in `s' not in the iident type table */
-	ss = itype_end(s, IIDENT, 0);
+	ss = itype_end(s, INAMESPC, 0);
     }
 
     /* If the next character is not [, then it is *
@@ -1262,7 +1303,6 @@ getarg(char **str, int *inv, Value v, int a2, zlong *w,
     /* first parse any subscription flags */
     if (v->pm && (*s == '(' || *s == Inpar)) {
 	int escapes = 0;
-	int waste;
 	for (s++; *s != ')' && *s != Outpar && s != *str; s++) {
 	    switch (*s) {
 	    case 'r':
@@ -1339,8 +1379,13 @@ getarg(char **str, int *inv, Value v, int a2, zlong *w,
 		sav = *t;
 		*t = '\0';
 		s += arglen;
-		sep = escapes ? getkeystring(s, &waste, GETKEYS_SEP, NULL)
-		    : dupstring(s);
+		if (escapes) {
+		    int len;
+		    sep = getkeystring(s, &len, GETKEYS_SEP, NULL);
+		    sep = metafy(sep, len, META_HREALLOC);
+		}
+		else
+		    sep = dupstring(s);
 		*t = sav;
 		s = t + arglen - 1;
 		break;
@@ -1432,10 +1477,14 @@ getarg(char **str, int *inv, Value v, int a2, zlong *w,
     if (ishash && (keymatch || !rev))
 	remnulargs(s);
     if (needtok) {
+	char exe = opts[EXECOPT];
 	s = dupstring(s);
 	if (parsestr(&s))
 	    return 0;
+	if (flags & SCANPM_NOEXEC)
+	    opts[EXECOPT] = 0;
 	singsub(&s);
+	opts[EXECOPT] = exe;
     } else if (rev)
 	remnulargs(s);	/* This is probably always a no-op, but ... */
     if (!rev) {
@@ -1665,7 +1714,7 @@ getarg(char **str, int *inv, Value v, int a2, zlong *w,
 	    /* Searching characters */
 	    int slen;
 	    d = getstrvalue(v);
-	    if (!d || !*d)
+	    if (!d)
 		return 0;
 	    /*
 	     * beg and len are character counts, not raw offsets.
@@ -2047,6 +2096,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
     char *s, *t, *ie;
     char sav, c;
     int ppar = 0;
+    int itype = (flags & SCANPM_NONAMESPC) ? IIDENT : INAMESPC;
 
     s = t = *pptr;
 
@@ -2056,7 +2106,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
 	else
 	    ppar = *s++ - '0';
     }
-    else if ((ie = itype_end(s, IIDENT, 0)) != s)
+    else if ((ie = itype_end(s, itype, 0)) != s)
 	s = ie;
     else if (c == Quest)
 	*s++ = '?';
@@ -2094,7 +2144,10 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
 	int isvarat;
 
         isvarat = (t[0] == '@' && !t[1]);
-	pm = (Param) paramtab->getnode(paramtab, *t == '0' ? "0" : t);
+	if (flags & SCANPM_NONAMEREF)
+	    pm = (Param) paramtab->getnode2(paramtab, *t == '0' ? "0" : t);
+	else
+	    pm = (Param) paramtab->getnode(paramtab, *t == '0' ? "0" : t);
 	if (sav)
 	    *s = sav;
 	*pptr = s;
@@ -2105,6 +2158,29 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
 	    memset(v, 0, sizeof(*v));
 	else
 	    v = (Value) hcalloc(sizeof *v);
+	if ((pm->node.flags & PM_NAMEREF) && !(flags & SCANPM_NONAMEREF)) {
+	    char *refname = GETREFNAME(pm);
+	    if (refname && *refname) {
+		/* only happens for namerefs pointing to array elements */
+		char *ref = dupstring(refname);
+		char *ss = pm->width ? ref + pm->width : NULL;
+		if (ss) {
+		    sav = *ss;
+		    *ss = 0;
+		}
+		Param p1 = (Param)gethashnode2(paramtab, ref);
+		if (!(p1 && (pm = upscope(p1, pm->base))) ||
+		    ((pm->node.flags & PM_UNSET) &&
+		     !(pm->node.flags & PM_DECLARED)))
+		    return NULL;
+		if (ss) {
+		    flags |= SCANPM_NOEXEC;
+		    *ss = sav;
+		    s = dyncat(ss,*pptr);
+		} else
+		    s = *pptr;
+	    }
+	}
 	if (PM_TYPE(pm->node.flags) & (PM_ARRAY|PM_HASHED)) {
 	    /* Overload v->isarr as the flag bits for hashed arrays. */
 	    v->isarr = flags | (isvarat ? SCANPM_ISVAR_AT : 0);
@@ -2124,7 +2200,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
 		return v;
 	    }
 	} else if (!(flags & SCANPM_ASSIGNING) && v->isarr &&
-		   itype_end(t, IIDENT, 1) != t && isset(KSHARRAYS))
+		   itype_end(t, INAMESPC, 1) != t && isset(KSHARRAYS))
 	    v->end = 1, v->isarr = 0;
     }
     if (!bracks && *s)
@@ -2673,6 +2749,7 @@ assignstrvalue(Value v, char *val, int flags)
         }
 	break;
     }
+    setscope(v->pm);
     if ((!v->pm->env && !(v->pm->node.flags & PM_EXPORTED) &&
 	 !(isset(ALLEXPORT) && !(v->pm->node.flags & PM_HASHELEM))) ||
 	(v->pm->node.flags & PM_ARRAY) || v->pm->ename)
@@ -3008,7 +3085,7 @@ check_warn_pm(Param pm, const char *pmtype, int created,
     } else
 	return;
 
-    if (pm->node.flags & PM_SPECIAL)
+    if (pm->node.flags & (PM_SPECIAL|PM_NAMEREF))
 	return;
 
     for (i = funcstack; i; i = i->prev) {
@@ -3080,10 +3157,19 @@ assignsparam(char *s, char *val, int flags)
 	}
     }
     if (!v && !(v = getvalue(&vbuf, &t, 1))) {
-	unqueue_signals();
 	zsfree(val);
+	unqueue_signals();
 	/* errflag |= ERRFLAG_ERROR; */
 	return NULL;
+    }
+    if (*val && (v->pm->node.flags & PM_NAMEREF)) {
+	if (!valid_refname(val)) {
+	    zerr("invalid variable name: %s", val);
+	    zsfree(val);
+	    unqueue_signals();
+	    errflag |= ERRFLAG_ERROR;
+	    return NULL;
+	}
     }
     if (flags & ASSPM_WARN)
 	check_warn_pm(v->pm, "scalar", created, 1);
@@ -3111,8 +3197,8 @@ assignsparam(char *s, char *val, int flags)
 			lhs.u.l = lhs.u.l + (zlong)rhs.u.d;
 		}
 		setnumvalue(v, lhs);
-    	    	unqueue_signals();
 		zsfree(val);
+    	    	unqueue_signals();
 		return v->pm; /* avoid later setstrvalue() call */
 	    case PM_ARRAY:
 	    	if (unset(KSHARRAYS)) {
@@ -3137,9 +3223,9 @@ assignsparam(char *s, char *val, int flags)
 	    case PM_INTEGER:
 	    case PM_EFLOAT:
 	    case PM_FFLOAT:
+		zsfree(val);
 		unqueue_signals();
 		zerr("attempt to add to slice of a numeric variable");
-		zsfree(val);
 		return NULL;
 	    case PM_ARRAY:
 	      kshappend:
@@ -3578,7 +3664,7 @@ mod_export Param
 setiparam_no_convert(char *s, zlong val)
 {
     /*
-     * If the target is already an integer, thisgets converted
+     * If the target is already an integer, this gets converted
      * back.  Low technology rules.
      */
     char buf[BDIGBUFSIZE];
@@ -3598,7 +3684,8 @@ unsetparam(char *s)
     if ((pm = (Param) (paramtab == realparamtab ?
 		       /* getnode2() to avoid autoloading */
 		       paramtab->getnode2(paramtab, s) :
-		       paramtab->getnode(paramtab, s))))
+		       paramtab->getnode(paramtab, s))) &&
+	!(pm->node.flags & PM_NAMEREF))
 	unsetparam_pm(pm, 0, 1);
     unqueue_signals();
 }
@@ -4119,7 +4206,8 @@ char *
 tiedarrgetfn(Param pm)
 {
     struct tieddata *dptr = (struct tieddata *)pm->u.data;
-    return *dptr->arrptr ? zjoin(*dptr->arrptr, STOUC(dptr->joinchar), 1) : "";
+    return *dptr->arrptr ?
+	    zjoin(*dptr->arrptr, (unsigned char) dptr->joinchar, 1) : "";
 }
 
 /**/
@@ -4815,12 +4903,12 @@ keyboardhacksetfn(UNUSED(Param pm), char *x)
 	    zwarn("Only one KEYBOARD_HACK character can be defined");  /* could be changed if needed */
 	}
 	for (i = 0; i < len; i++) {
-	    if (!isascii(STOUC(x[i]))) {
+	    if (!isascii((unsigned char) x[i])) {
 		zwarn("KEYBOARD_HACK can only contain ASCII characters");
 		return;
 	    }
 	}
-	keyboardhackchar = len ? STOUC(x[0]) : '\0';
+	keyboardhackchar = len ? (unsigned char) x[0] : '\0';
 	free(x);
     } else
 	keyboardhackchar = '\0';
@@ -4854,14 +4942,14 @@ histcharssetfn(UNUSED(Param pm), char *x)
 	if (len > 3)
 	    len = 3;
 	for (i = 0; i < len; i++) {
-	    if (!isascii(STOUC(x[i]))) {
+	    if (!isascii((unsigned char) x[i])) {
 		zwarn("HISTCHARS can only contain ASCII characters");
 		return;
 	    }
 	}
-	bangchar = len ? STOUC(x[0]) : '\0';
-	hatchar =  len > 1 ? STOUC(x[1]) : '\0';
-	hashchar = len > 2 ? STOUC(x[2]) : '\0';
+	bangchar = len ? (unsigned char) x[0] : '\0';
+	hatchar =  len > 1 ? (unsigned char) x[1] : '\0';
+	hashchar = len > 2 ? (unsigned char) x[2] : '\0';
 	free(x);
     } else {
 	bangchar = '!';
@@ -5083,7 +5171,7 @@ arrfixenv(char *s, char **t)
     if (pm->node.flags & PM_SPECIAL)
 	joinchar = ':';
     else
-	joinchar = STOUC(((struct tieddata *)pm->u.data)->joinchar);
+	joinchar = (unsigned char) ((struct tieddata *)pm->u.data)->joinchar;
 
     addenv(pm, t ? zjoin(t, joinchar, 1) : "");
 }
@@ -5105,9 +5193,9 @@ zputenv(char *str)
     char *ptr;
     int ret;
 
-    for (ptr = str; *ptr && STOUC(*ptr) < 128 && *ptr != '='; ptr++)
+    for (ptr = str; *ptr && (unsigned char) *ptr < 128 && *ptr != '='; ptr++)
 	;
-    if (STOUC(*ptr) >= 128) {
+    if ((unsigned char) *ptr >= 128) {
 	/*
 	 * Environment variables not in the portable character
 	 * set are non-standard and we don't really know of
@@ -5718,7 +5806,8 @@ scanendscope(HashNode hn, UNUSED(int flags))
 		export_param(pm);
 	} else
 	    unsetparam_pm(pm, 0, 0);
-    }
+    } else if ((pm->node.flags & PM_NAMEREF) && pm->base > pm->level)
+	pm->base = locallevel;
 }
 
 
@@ -5778,7 +5867,8 @@ static const struct paramtypes pmtypes[] = {
     { PM_TAGGED, "tagged", 't', 0},
     { PM_EXPORTED, "exported", 'x', 0},
     { PM_UNIQUE, "unique", 'U', 0},
-    { PM_TIED, "tied", 'T', 0}
+    { PM_TIED, "tied", 'T', 0},
+    { PM_NAMEREF, "nameref", 'n', 0}
 };
 
 #define PMTYPES_SIZE ((int)(sizeof(pmtypes)/sizeof(struct paramtypes)))
@@ -5876,6 +5966,10 @@ printparamnode(HashNode hn, int printflags)
     Param p = (Param) hn;
     Param peer = NULL;
 
+    if (!(p->node.flags & PM_HASHELEM) &&
+	!(printflags & PRINT_WITH_NAMESPACE) && *(p->node.nam) == '.')
+	return;
+    
     if (p->node.flags & PM_UNSET) {
 	if ((printflags & (PRINT_POSIX_READONLY|PRINT_POSIX_EXPORT) &&
 	     p->node.flags & (PM_READONLY|PM_EXPORTED)) ||
@@ -6018,7 +6112,7 @@ printparamnode(HashNode hn, int printflags)
 	 * append the join char for tied parameters if different from colon
 	 * for typeset -p output.
 	 */
-	unsigned char joinchar = STOUC(((struct tieddata *)peer->u.data)->joinchar);
+	unsigned char joinchar = (unsigned char) ((struct tieddata *)peer->u.data)->joinchar;
 	if (joinchar != ':') {
 	    char buf[2];
 	    buf[0] = joinchar;
@@ -6031,4 +6125,207 @@ printparamnode(HashNode hn, int printflags)
 	putchar(' ');
     else if (!(printflags & PRINT_KV_PAIR))
 	putchar('\n');
+}
+
+/**/
+mod_export HashNode
+resolve_nameref(Param pm, const Asgment stop)
+{
+    HashNode hn = (HashNode)pm;
+    const char *seek = stop ? stop->value.scalar : NULL;
+
+    if (pm && (pm->node.flags & PM_NAMEREF)) {
+	char *refname = GETREFNAME(pm);
+	if (pm->node.flags & (PM_UNSET|PM_TAGGED)) {
+	    /* Semaphore with createparam() */
+	    pm->node.flags &= ~PM_UNSET;
+	    if (pm->node.flags & PM_NEWREF)	/* See setloopvar() */
+		return NULL;
+	    if (refname && *refname && (pm->node.flags & PM_TAGGED))
+		pm->node.flags |= PM_SELFREF;	/* See setscope() */
+	    return (HashNode) pm;
+	} else if (refname) {
+	    if ((pm->node.flags & PM_TAGGED) ||
+		(stop && strcmp(refname, stop->name) == 0)) {
+		/* zwarnnam(refname, "invalid self reference"); */
+		return stop ? (HashNode)pm : NULL;
+	    }
+	    if (*refname)
+		seek = refname;
+	}
+    }
+    else if (pm && !(stop && (stop->flags & PM_NAMEREF)))
+	return (HashNode)pm;
+    if (seek) {
+	queue_signals();
+	/* pm->width is the offset of any subscript */
+	if (pm && (pm->node.flags & PM_NAMEREF) && pm->width) {
+	    if (stop) {
+		if (stop->flags & PM_NAMEREF)
+		    hn = (HashNode)pm;
+		else
+		    hn = NULL;
+	    } else {
+		/* this has to be the end of any chain */
+		hn = (HashNode)pm;	/* see fetchvalue() */
+	    }
+	} else if ((hn = gethashnode2(realparamtab, seek))) {
+	    if (pm) {
+		if (!(stop && (stop->flags & (PM_LOCAL))))
+		    hn = (HashNode)upscope((Param)hn,
+					   ((pm->node.flags & PM_NAMEREF) ?
+					    pm->base : ((Param)hn)->level));
+		/* user can't tag a nameref, safe for loop detection */
+		pm->node.flags |= PM_TAGGED;
+	    }
+	    if (hn) {
+		if (hn->flags & PM_AUTOLOAD)
+		    hn = getparamnode(realparamtab, seek);
+		if (!(hn->flags & PM_UNSET))
+		    hn = resolve_nameref((Param)hn, stop);
+	    }
+	    if (pm)
+		pm->node.flags &= ~PM_TAGGED;
+	} else if (stop && (stop->flags & PM_NAMEREF))
+	    hn = (pm && (pm->node.flags & PM_NEWREF)) ? NULL : (HashNode)pm;
+	unqueue_signals();
+    }
+
+    return hn;
+}
+
+/**/
+mod_export void
+setloopvar(char *name, char *value)
+{
+  Param pm = (Param) gethashnode2(realparamtab, name);
+
+  if (pm && (pm->node.flags & PM_NAMEREF)) {
+      if (pm->node.flags & PM_READONLY) {
+	  /* Bash error is: "%s: readonly variable" */
+	  zerr("read-only reference: %s", pm->node.nam);
+	  return;
+      }
+      pm->base = pm->width = 0;
+      SETREFNAME(pm, ztrdup(value));
+      pm->node.flags &= ~PM_UNSET;
+      pm->node.flags |= PM_NEWREF;
+      setscope(pm);
+      pm->node.flags &= ~PM_NEWREF;
+  } else
+      setsparam(name, value);
+}
+
+/**/
+static void
+setscope(Param pm)
+{
+    if (pm->node.flags & PM_NAMEREF) {
+	Param basepm;
+	struct asgment stop;
+	char *refname = GETREFNAME(pm);
+	char *t = refname ? itype_end(refname, INAMESPC, 0) : NULL;
+
+	/* Temporarily change nameref to array parameter itself */
+	if (t && *t == '[')
+	    *t = 0;
+	else
+	    t = 0;
+	stop.name = "";
+	stop.value.scalar = NULL;
+	stop.flags = PM_NAMEREF;
+	if (locallevel)
+	    stop.flags |= PM_LOCAL;
+	basepm = (Param)resolve_nameref(pm, &stop);
+	if (t) {
+	    pm->width = t - refname;
+	    *t = '[';
+	}
+	if (basepm) {
+	    if (basepm->node.flags & PM_NAMEREF) {
+		if (pm == basepm) {
+		    if (pm->node.flags & PM_SELFREF) {
+			/* Loop signalled by resolve_nameref() */
+			if (upscope(pm, pm->base) == pm) {
+			    zerr("%s: invalid self reference", refname);
+			    unsetparam_pm(pm, 0, 1);
+			    return;
+			}
+			pm->node.flags &= ~PM_SELFREF;
+		    } else if (pm->base == pm->level) {
+			if (refname && *refname &&
+			    strcmp(pm->node.nam, refname) == 0) {
+			    zerr("%s: invalid self reference", refname);
+			    unsetparam_pm(pm, 0, 1);
+			    return;
+			}
+		    }
+		} else if ((t = GETREFNAME(basepm))) {
+		    if (basepm->base <= basepm->level &&
+			strcmp(pm->node.nam, t) == 0) {
+			zerr("%s: invalid self reference", refname);
+			unsetparam_pm(pm, 0, 1);
+			return;
+		    }
+		}
+	    } else
+		pm->base = basepm->level;
+	}
+	if (pm->base > pm->level) {
+	    if (EMULATION(EMULATE_KSH)) {
+		zerr("%s: global reference cannot refer to local variable",
+		      pm->node.nam);
+		unsetparam_pm(pm, 0, 1);
+	    } else if (isset(WARNNESTEDVAR))
+		zwarn("reference %s in enclosing scope set to local variable %s",
+		      pm->node.nam, refname);
+	}
+	if (refname && upscope(pm, pm->base) == pm &&
+	    strcmp(pm->node.nam, refname) == 0) {
+	    zerr("%s: invalid self reference", refname);
+	    unsetparam_pm(pm, 0, 1);
+	}
+    }
+}
+
+/**/
+mod_export Param
+upscope(Param pm, int reflevel)
+{
+    Param up = pm->old;
+    while (pm && up && up->level >= reflevel) {
+	pm = up;
+	if (up)
+	    up = up->old;
+    }
+    return pm;
+}
+
+/**/
+mod_export int
+valid_refname(char *val)
+{
+    char *t = itype_end(val, INAMESPC, 0);
+
+    if (*t != 0) {
+	if (*t == '[') {
+	    tokenize(t = dupstring(t+1));
+	    while ((t = parse_subscript(t, 0, ']')) && *t++ == Outbrack) {
+		if (*t == Inbrack)
+		    ++t;
+		else
+		    break;
+	    }
+	    if (t && *t) {
+		/* zwarn("%s: stuff after subscript: %s", val, t); */
+		t = NULL;
+	    }
+	} else if (t[1] || !(*t == '!' || *t == '?' ||
+			     *t == '$' || *t == '-' ||
+			     *t == '0' || *t == '_')) {
+	    /* Skipping * @ # because of doshfunc() implementation */
+	    t = NULL;
+	}
+    }
+    return !!t;
 }

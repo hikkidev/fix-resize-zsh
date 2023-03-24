@@ -737,6 +737,7 @@ raw_getbyte(long do_keytmout, char *cptr, int full)
 			) {
 			/* Handle the fd. */
 			char *fdbuf;
+			Thingy save_lbindk = lbindk;
 			{
 			    char buf[BDIGBUFSIZE];
 			    convbase(buf, lwatch_fd->fd, 10);
@@ -779,6 +780,7 @@ raw_getbyte(long do_keytmout, char *cptr, int full)
 			     */
 			    errtry = 1;
 			}
+			lbindk = save_lbindk;
 		    }
 		}
 		/* Function may have invalidated the display. */
@@ -876,7 +878,7 @@ getbyte(long do_keytmout, int *timeout, int full)
 #endif
 
     if (kungetct)
-	ret = STOUC(kungetbuf[--kungetct]);
+	ret = (unsigned char) kungetbuf[--kungetct];
     else {
 	for (;;) {
 	    int q = queue_signal_level();
@@ -940,7 +942,7 @@ getbyte(long do_keytmout, int *timeout, int full)
 	else if (cc == '\n')
 	    cc = '\r';
 
-	ret = STOUC(cc);
+	ret = (unsigned char) cc;
     }
     /*
      * curvichg.buf is raw bytes, not wide characters, so is dealt
@@ -1230,9 +1232,9 @@ zleread(char **lp, char **rp, int flags, int context, char *init, char *finish)
 	char *pptbuf;
 	int pptlen;
 
-	pptbuf = unmetafy(promptexpand(lp ? *lp : NULL, 0, NULL, NULL,
-				       &pmpt_attr),
+	pptbuf = unmetafy(promptexpand(lp ? *lp : NULL, 0, NULL, NULL),
 			  &pptlen);
+	pmpt_attr = txtcurrentattrs;
 	write_loop(2, pptbuf, pptlen);
 	free(pptbuf);
 	return shingetline();
@@ -1268,10 +1270,13 @@ zleread(char **lp, char **rp, int flags, int context, char *init, char *finish)
     trashedzle = 0;
     maxheight = 0;
     raw_lp = lp;
-    lpromptbuf = promptexpand(lp ? *lp : NULL, 1, NULL, NULL, &pmpt_attr);
+    txtcurrentattrs = txtpendingattrs = txtunknownattrs = 0;
+    lpromptbuf = promptexpand(lp ? *lp : NULL, 1, NULL, NULL);
+    pmpt_attr = txtcurrentattrs;
     raw_rp = rp;
-    rpmpt_attr = pmpt_attr;
-    rpromptbuf = promptexpand(rp ? *rp : NULL, 1, NULL, NULL, &rpmpt_attr);
+    rpromptbuf = promptexpand(rp ? *rp : NULL, 1, NULL, NULL);
+    rpmpt_attr = txtcurrentattrs;
+    prompt_attr = mixattrs(pmpt_attr, rpmpt_attr);
     free_prepostdisplay();
 
     zlereadflags = flags;
@@ -2010,17 +2015,18 @@ reexpandprompt(void)
 	    char *new_lprompt, *new_rprompt;
 	    looping = reexpanding;
 
-	    new_lprompt = promptexpand(raw_lp ? *raw_lp : NULL, 1, NULL, NULL,
-				       &pmpt_attr);
+	    txtcurrentattrs = txtpendingattrs = txtunknownattrs = 0;
+	    new_lprompt = promptexpand(raw_lp ? *raw_lp : NULL, 1, NULL, NULL);
+	    pmpt_attr = txtcurrentattrs;
 	    free(lpromptbuf);
 	    lpromptbuf = new_lprompt;
 
 	    if (looping != reexpanding)
 		continue;
 
-	    rpmpt_attr = pmpt_attr;
-	    new_rprompt = promptexpand(raw_rp ? *raw_rp : NULL, 1, NULL, NULL,
-				       &rpmpt_attr);
+	    new_rprompt = promptexpand(raw_rp ? *raw_rp : NULL, 1, NULL, NULL);
+	    rpmpt_attr = txtcurrentattrs;
+	    prompt_attr = mixattrs(pmpt_attr, rpmpt_attr);
 	    free(rpromptbuf);
 	    rpromptbuf = new_rprompt;
 	} while (looping != reexpanding);
@@ -2066,6 +2072,8 @@ trashzle(void)
 	trashedzle = 1;
 	zrefresh();
 	showinglist = sl;
+	treplaceattrs(prompt_attr);
+	applytextattributes(0);
 	moveto(nlnct, 0);
 	if (clearflag && tccan(TCCLEAREOD)) {
 	    tcout(TCCLEAREOD);

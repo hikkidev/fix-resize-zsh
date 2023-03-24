@@ -258,6 +258,9 @@ struct modifier {
 #define MOD_NULL  (1<<5)   /* throw away text for the vi cut buffer */
 #define MOD_CHAR  (1<<6)   /* force character-wise movement */
 #define MOD_LINE  (1<<7)   /* force line-wise movement */
+#define MOD_PRI   (1<<8)   /* OS primary selection for the vi cut buffer */
+#define MOD_CLIP  (1<<9)   /* OS clipboard for the vi cut buffer */
+#define MOD_OSSEL (MOD_PRI | MOD_CLIP)  /* either system selection */
 
 /* current modifier status */
 
@@ -487,11 +490,7 @@ typedef struct {
      */
     REFRESH_CHAR chr;
     /*
-     * Its attributes.  'On' attributes (TXT_ATTR_ON_MASK) are
-     * applied before the character, 'off' attributes (TXT_ATTR_OFF_MASK)
-     * after it.  'On' attributes are present for all characters that
-     * need the effect; 'off' attributes are only present for the
-     * last character in the sequence.
+     * Its attributes.
      */
     zattr atr;
 } REFRESH_ELEMENT;
@@ -523,7 +522,7 @@ typedef REFRESH_ELEMENT *REFRESH_STRING;
     ((int)((unsigned)(x) - ZSH_INVALID_WCHAR_BASE))
 /* Turn a single byte character into a private wide character */
 #define ZSH_CHAR_TO_INVALID_WCHAR(x)			\
-    ((wchar_t)(STOUC(x) + ZSH_INVALID_WCHAR_BASE))
+    ((wchar_t)((unsigned char) x + ZSH_INVALID_WCHAR_BASE))
 #endif
 
 

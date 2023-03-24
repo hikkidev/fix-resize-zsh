@@ -1230,14 +1230,14 @@ check_param(char *s, int set, int test)
 	else if (idigit(*e))
 	    while (idigit(*e))
 		e++;
-	else if ((ie = itype_end(e, IIDENT, 0)) != e) {
+	else if ((ie = itype_end(e, INAMESPC, 0)) != e) {
 	    do {
 		e = ie;
 		if (comppatmatch && *comppatmatch &&
 		    (*e == Star || *e == Quest))
 		    ie = e + 1;
 		else
-		    ie = itype_end(e, IIDENT, 0);
+		    ie = itype_end(e, INAMESPC, 0);
 	    } while (ie != e);
 	}
 
@@ -2898,9 +2898,9 @@ add_match_data(int alt, char *str, char *orig, Cline line,
 		*t++ = '$';
 		*t++ = '\'';
 		*t++ = '\\';
-		*t++ = '0' + ((STOUC(curchar) >> 6) & 7);
-		*t++ = '0' + ((STOUC(curchar) >> 3) & 7);
-		*t++ = '0' + (STOUC(curchar) & 7);
+		*t++ = '0' + (((unsigned char) curchar >> 6) & 7);
+		*t++ = '0' + (((unsigned char) curchar >> 3) & 7);
+		*t++ = '0' + ((unsigned char) curchar & 7);
 		*t++ = '\'';
 	    } while (cnt == MB_INCOMPLETE && fs < fe);
 	    /* Scanning restarts from the spot after the char we skipped. */

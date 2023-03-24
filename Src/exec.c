@@ -56,14 +56,56 @@ struct funcsave {
 typedef struct funcsave *Funcsave;
 
 /*
- * used to suppress ERREXIT and trapping of SIGZERR, SIGEXIT.
+ * Used to suppress ERREXIT and trapping of SIGZERR, SIGEXIT in the
+ * evaluation of sub-commands of the command under evaluation. The
+ * variable must be updated before the evaluation of the sub-commands
+ * starts and restored to its previous state right after that
+ * evaluation ends. The variable is read and acted upon in execlist.
+ *
+ * A good usage example can be found in execwhile in loop.c, which
+ * evaluates while statements. The variable is updated to disable
+ * ERREXIT just before evaluating the while's condition and restored
+ * to its previous state right after the evaluation of the condition.
+ *
  * Bits from noerrexit_bits.
  */
 
 /**/
 int noerrexit;
 
-/* used to suppress ERREXIT or ERRRETURN for one occurrence: 0 or 1 */
+/*
+ * Used to suppress ERREXIT and ERRRETURN for the command under
+ * evaluation.  The variable must be enabled (set to 1) at the very
+ * end of the evaluation of the command. It must come after the
+ * evaluation of any sub-commands of the command under evaluation. The
+ * variable is read and acted upon in execlist, which also takes care
+ * of initialising and resetting it to 0.
+ *
+ * Unlike the variable noerrexit, whose state applies to the
+ * evaluation of whole sub-commands (and their direct and indirect
+ * sub-commands), the scope of the variable this_noerrexit is much
+ * more localized. ERREXIT and ERRRETURN are triggered at the end of
+ * the function execlist after the evaluation of some or all of the
+ * list's sub-commands. The role of the variable this_noerrexit is to
+ * give to the functions evaluating the list's sub-commands the
+ * possibility to tell the calling execlist not to trigger ERREXIT and
+ * ERRRETURN. In other words, the variable acts as an additional
+ * return value between the called evaluation functions and the
+ * calling execlist. For that reason the variable must always be set
+ * as late as possible and in particular after any sub-command
+ * evaluation. If the variable is set before the evaluation of a
+ * sub-command, if may affect the wrong execlist, if the sub-command
+ * evaluation involves another execlist call, and/or the variable may
+ * get modified by the sub-command evaluation and thus wouldn't return
+ * the desired value to the calling execlist.
+ *
+ * Good usage examples can be found in the exec functions in loop.c,
+ * which evaluate compound commands. The variable is enabled right
+ * before returning from the functions, after all the sub-commands of
+ * the compound commands have already been evaluated.
+ *
+ * 0 or 1
+ */
 
 /**/
 int this_noerrexit;
@@ -451,7 +493,7 @@ execcursh(Estate state, int do_exec)
     cmdpop();
 
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
 
     return lastval;
 }
@@ -561,7 +603,7 @@ zexecve(char *pth, char **argv, char **newenvp)
                         isbinary = 1;
                         hasletter = 0;
                         for (ptr = execvebuf; ptr < ptr2; ptr++) {
-                            if (islower(STOUC(*ptr)) || *ptr == '$' || *ptr == '`')
+			    if (islower((unsigned char) *ptr) || *ptr == '$' || *ptr == '`')
                                 hasletter = 1;
                             if (hasletter && *ptr == '\n') {
                                 isbinary = 0;
@@ -1373,7 +1415,7 @@ execlist(Estate state, int dont_change_job, int exiting)
 	    int oerrexit_opt = opts[ERREXIT];
 	    Param pm;
 	    opts[ERREXIT] = 0;
-	    noerrexit = NOERREXIT_EXIT | NOERREXIT_RETURN;
+	    noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN;
 	    if (ltype & Z_SIMPLE) /* skip the line number */
 		pc2++;
 	    pm = assignsparam("ZSH_DEBUG_CMD",
@@ -1424,17 +1466,13 @@ execlist(Estate state, int dont_change_job, int exiting)
 	    goto sublist_done;
 	}
 	while (wc_code(code) == WC_SUBLIST) {
-	    int isend = (WC_SUBLIST_TYPE(code) == WC_SUBLIST_END);
+	    this_noerrexit = 0;
+	    int isandor = WC_SUBLIST_TYPE(code) != WC_SUBLIST_END;
+	    int isnot = WC_SUBLIST_FLAGS(code) & WC_SUBLIST_NOT;
 	    next = state->pc + WC_SUBLIST_SKIP(code);
-	    if (!oldnoerrexit)
-		noerrexit = isend ? 0 : NOERREXIT_EXIT | NOERREXIT_RETURN;
-	    if (WC_SUBLIST_FLAGS(code) & WC_SUBLIST_NOT) {
-		/* suppress errexit for "! this_command" */
-		if (isend)
-		    this_noerrexit = 1;
-		/* suppress errexit for ! <list-of-shell-commands> */
-		noerrexit = NOERREXIT_EXIT | NOERREXIT_RETURN;
-	    }
+	    /* suppress errexit for commands before && and || and after ! */
+	    if (isandor || isnot)
+		noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN;
 	    switch (WC_SUBLIST_TYPE(code)) {
 	    case WC_SUBLIST_END:
 		/* End of sublist; just execute, ignoring status. */
@@ -1442,9 +1480,10 @@ execlist(Estate state, int dont_change_job, int exiting)
 		    execsimple(state);
 		else
 		    execpline(state, code, ltype, (ltype & Z_END) && exiting);
-		if (!locallevel || unset(ERRRETURN))
-		    this_noerrexit = noerrexit;
 		state->pc = next;
+		/* suppress errexit for the command "! ..." */
+		if (isnot)
+		  this_noerrexit = 1;
 		goto sublist_done;
 		break;
 	    case WC_SUBLIST_AND:
@@ -1520,14 +1559,7 @@ execlist(Estate state, int dont_change_job, int exiting)
 	state->pc--;
 sublist_done:
 
-	/*
-	 * See hairy code near the end of execif() for the
-	 * following.  "noerrexit " only applies until
-	 * we hit execcmd on the way down.  We're now
-	 * on the way back up, so don't restore it.
-	 */
-	if (!(oldnoerrexit & NOERREXIT_UNTIL_EXEC))
-	    noerrexit = oldnoerrexit;
+	noerrexit = oldnoerrexit;
 
 	if (sigtrapped[SIGDEBUG] && !isset(DEBUGBEFORECMD) && !donedebug) {
 	    /*
@@ -1536,7 +1568,7 @@ sublist_done:
 	     */
 	    int oerrexit_opt = opts[ERREXIT];
 	    opts[ERREXIT] = 0;
-	    noerrexit = NOERREXIT_EXIT | NOERREXIT_RETURN;
+	    noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN;
 	    exiting = donetrap;
 	    ret = lastval;
 	    dotrap(SIGDEBUG);
@@ -1566,6 +1598,7 @@ sublist_done:
 			       (isset(ERRRETURN) && !errreturn)) &&
 		    !(noerrexit & NOERREXIT_EXIT);
 		if (errexit) {
+		    errflag = 0;
 		    if (sigtrapped[SIGEXIT])
 			dotrap(SIGEXIT);
 		    if (mypid != getpid())
@@ -1583,6 +1616,7 @@ sublist_done:
 	    break;
 	code = *state->pc++;
     }
+    this_noerrexit = 0;
     pline_level = old_pline_level;
     list_pipe = old_list_pipe;
     list_pipe_job = old_list_pipe_job;
@@ -1597,9 +1631,12 @@ sublist_done:
 	thisjob = cj;
 
     if (exiting && sigtrapped[SIGEXIT]) {
+	int eflag = errflag;
+	errflag = 0;	/* Clear the context for trap */
 	dotrap(SIGEXIT);
 	/* Make sure this doesn't get executed again. */
 	sigtrapped[SIGEXIT] = 0;
+	errflag = eflag;
     }
 
     unqueue_signals();
@@ -1928,7 +1965,7 @@ execpline(Estate state, wordcode slcode, int how, int last1)
 	}
 	else
 	    unqueue_signals();
-	if ((slflags & WC_SUBLIST_NOT) && !errflag)
+	if ((slflags & WC_SUBLIST_NOT) && !errflag && !retflag)
 	    lastval = !lastval;
     }
     if (!pline_level)
@@ -3206,10 +3243,6 @@ execcmd_exec(Estate state, Execcmd_params eparams,
     } else
 	preargs = NULL;
 
-    /* if we get this far, it is OK to pay attention to lastval again */
-    if (noerrexit & NOERREXIT_UNTIL_EXEC)
-	noerrexit = 0;
-
     /* Do prefork substitutions.
      *
      * Decide if we need "magic" handling of ~'s etc. in
@@ -4307,10 +4340,13 @@ execcmd_exec(Estate state, Execcmd_params eparams,
 	}
     }
     if (newxtrerr) {
+	int eno = errno;
 	fil = fileno(newxtrerr);
 	fclose(newxtrerr);
 	xtrerr = oxtrerr;
+	/* Call zclose() to clean up internal tables, ignore EBADF */
 	zclose(fil);
+	errno = eno;
     }
 
     zsfree(STTYval);
@@ -4641,6 +4677,9 @@ getoutput(char *cmd, int qt)
 
     if (!prog)
 	return NULL;
+
+    if (!isset(EXECOPT))
+	return newlinklist();
 
     if ((s = simple_redir_name(prog, REDIR_READ))) {
 	/* $(< word) */
@@ -5931,15 +5970,6 @@ doshfunc(Shfunc shfunc, LinkList doshargs, int noreturnval)
 	     * This function is forced to return.
 	     */
 	    retflag = 0;
-	    /*
-	     * The calling function isn't necessarily forced to return,
-	     * but it should be made sensitive to ERR_EXIT and
-	     * ERR_RETURN as the assumptions we made at the end of
-	     * constructs within this function no longer apply.  If
-	     * there are cases where this is not true, they need adding
-	     * to C03traps.ztst.
-	     */
-	    this_noerrexit = 0;
 	    breaks = funcsave->breaks;
 	}
 	freearray(pparams);

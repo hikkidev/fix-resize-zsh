@@ -86,7 +86,7 @@ set_widearray(char *mb_array, Widechar_array wca)
 	while (*mb_array) {
 	    int mblen;
 
-	    if (STOUC(*mb_array) <= 0x7f) {
+	    if ((unsigned char) *mb_array <= 0x7f) {
 		mb_array++;
 		*wcptr++ = (wchar_t)*mb_array;
 		continue;
@@ -1543,7 +1543,8 @@ preprompt(void)
 	if (!eolmark)
 	    eolmark = "%B%S%#%s%b";
 	opts[PROMPTPERCENT] = 1;
-	str = promptexpand(eolmark, 1, NULL, NULL, NULL);
+	txtunknownattrs = TXT_ATTR_ALL;
+	str = promptexpand(eolmark, 1, NULL, NULL);
 	countprompt(str, &w, 0, -1);
 	opts[PROMPTPERCENT] = percents;
 	zputs(str, shout);
@@ -1713,7 +1714,7 @@ printprompt4(void)
 	opts[XTRACE] = 0;
 	unmetafy(s, &l);
 	s = unmetafy(promptexpand(metafy(s, l, META_NOALLOC),
-				  0, NULL, NULL, NULL), &l);
+				  0, NULL, NULL), &l);
 	opts[XTRACE] = t;
 
 	fprintf(xtrerr, "%s", s);
@@ -2939,7 +2940,7 @@ read1char(int echo)
     restore_queue_signals(q);
     if (echo)
 	write_loop(SHTTY, &c, 1);
-    return STOUC(c);
+    return (unsigned char) c;
 }
 
 /**/
@@ -3141,7 +3142,7 @@ spckword(char **s, int hist, int cmd, int ask)
 
     if (**s == String && !*t) {
 	guess = *s + 1;
-	if (itype_end(guess, IIDENT, 1) == guess)
+	if (itype_end(guess, INAMESPC, 1) == guess)
 	    return;
 	ic = String;
 	d = 100;
@@ -3230,7 +3231,7 @@ spckword(char **s, int hist, int cmd, int ask)
 		x = 'n';
 	    } else if (shout) {
 		char *pptbuf;
-		pptbuf = promptexpand(sprompt, 0, best, guess, NULL);
+		pptbuf = promptexpand(sprompt, 0, best, guess);
 		zputs(pptbuf, shout);
 		free(pptbuf);
 		fflush(shout);
@@ -4142,20 +4143,20 @@ inittyptab(void)
 #endif
     /* typtab['.'] |= IIDENT; */ /* Allow '.' in variable names - broken */
     typtab['_'] = IIDENT | IUSER;
-    typtab['-'] = typtab['.'] = typtab[STOUC(Dash)] = IUSER;
+    typtab['-'] = typtab['.'] = typtab[(unsigned char) Dash] = IUSER;
     typtab[' '] |= IBLANK | INBLANK;
     typtab['\t'] |= IBLANK | INBLANK;
     typtab['\n'] |= INBLANK;
     typtab['\0'] |= IMETA;
-    typtab[STOUC(Meta)  ] |= IMETA;
-    typtab[STOUC(Marker)] |= IMETA;
-    for (t0 = (int)STOUC(Pound); t0 <= (int)STOUC(LAST_NORMAL_TOK); t0++)
+    typtab[(unsigned char) Meta  ] |= IMETA;
+    typtab[(unsigned char) Marker] |= IMETA;
+    for (t0 = (int) (unsigned char) Pound; t0 <= (int) (unsigned char) LAST_NORMAL_TOK; t0++)
 	typtab[t0] |= ITOK | IMETA;
-    for (t0 = (int)STOUC(Snull); t0 <= (int)STOUC(Nularg); t0++)
+    for (t0 = (int) (unsigned char) Snull; t0 <= (int) (unsigned char) Nularg; t0++)
 	typtab[t0] |= ITOK | IMETA | INULL;
     for (s = ifs ? ifs : EMULATION(EMULATE_KSH|EMULATE_SH) ?
 	DEFAULT_IFS_SH : DEFAULT_IFS; *s; s++) {
-	int c = STOUC(*s == Meta ? *++s ^ 32 : *s);
+	int c = (unsigned char) (*s == Meta ? *++s ^ 32 : *s);
 #ifdef MULTIBYTE_SUPPORT
 	if (!isascii(c)) {
 	    /* see comment for wordchars below */
@@ -4171,7 +4172,7 @@ inittyptab(void)
 	typtab[c] |= ISEP;
     }
     for (s = wordchars ? wordchars : DEFAULT_WORDCHARS; *s; s++) {
-	int c = STOUC(*s == Meta ? *++s ^ 32 : *s);
+	int c = (unsigned char) (*s == Meta ? *++s ^ 32 : *s);
 #ifdef MULTIBYTE_SUPPORT
 	if (!isascii(c)) {
 	    /*
@@ -4192,16 +4193,16 @@ inittyptab(void)
 	DEFAULT_IFS_SH : DEFAULT_IFS, &ifs_wide);
 #endif
     for (s = SPECCHARS; *s; s++)
-	typtab[STOUC(*s)] |= ISPECIAL;
+	typtab[(unsigned char) *s] |= ISPECIAL;
     if (typtab_flags & ZTF_SP_COMMA)
-	typtab[STOUC(',')] |= ISPECIAL;
+	typtab[(unsigned char) ','] |= ISPECIAL;
     if (isset(BANGHIST) && bangchar && (typtab_flags & ZTF_INTERACT)) {
 	typtab_flags |= ZTF_BANGCHAR;
 	typtab[bangchar] |= ISPECIAL;
     } else
 	typtab_flags &= ~ZTF_BANGCHAR;
     for (s = PATCHARS; *s; s++)
-	typtab[STOUC(*s)] |= IPATTERN;
+	typtab[(unsigned char) *s] |= IPATTERN;
 
     unqueue_signals();
 }
@@ -4212,10 +4213,10 @@ makecommaspecial(int yesno)
 {
     if (yesno != 0) {
 	typtab_flags |= ZTF_SP_COMMA;
-	typtab[STOUC(',')] |= ISPECIAL;
+	typtab[(unsigned char) ','] |= ISPECIAL;
     } else {
 	typtab_flags &= ~ZTF_SP_COMMA;
-	typtab[STOUC(',')] &= ~ISPECIAL;
+	typtab[(unsigned char) ','] &= ~ISPECIAL;
     }
 }
 
@@ -4328,13 +4329,27 @@ wcsitype(wchar_t c, int itype)
  * If "once" is set, just test the first character, i.e. (outptr !=
  * inptr) tests whether the first character is valid in an identifier.
  *
- * Currently this is only called with itype IIDENT, IUSER or ISEP.
+ * Currently called only with itype INAMESPC, IIDENT, IUSER or ISEP.
  */
 
 /**/
 mod_export char *
 itype_end(const char *ptr, int itype, int once)
 {
+    if (itype == INAMESPC) {
+	itype = IIDENT;
+	if (!isset(POSIXIDENTIFIERS) || EMULATION(EMULATE_KSH)) {
+	    /* Special case for names containing ".", ksh93 namespaces */
+	    char *t = itype_end(ptr + (*ptr == '.'), itype, 0);
+	    if (t > ptr + (*ptr == '.')) {
+		if (*t == '.')
+		    ptr = t + 1;	/* Fall through */
+		else if (!once)
+		    return t;
+	    }
+	}
+    }
+
 #ifdef MULTIBYTE_SUPPORT
     if (isset(MULTIBYTE) &&
 	(itype != IIDENT || !isset(POSIXIDENTIFIERS))) {
@@ -4355,7 +4370,7 @@ itype_end(const char *ptr, int itype, int once)
 
 		if (wc == WEOF) {
 		    /* invalid, treat as single character */
-		    int chr = STOUC(*ptr == Meta ? ptr[1] ^ 32 : *ptr);
+		    int chr = (unsigned char) (*ptr == Meta ? ptr[1] ^ 32 : *ptr);
 		    /* in this case non-ASCII characters can't match */
 		    if (chr > 127 || !zistype(chr,itype))
 			break;
@@ -4394,7 +4409,7 @@ itype_end(const char *ptr, int itype, int once)
     } else
 #endif
 	for (;;) {
-	    int chr = STOUC(*ptr == Meta ? ptr[1] ^ 32 : *ptr);
+	    int chr = (unsigned char) (*ptr == Meta ? ptr[1] ^ 32 : *ptr);
 	    if (!zistype(chr,itype))
 		break;
 	    ptr += (*ptr == Meta) ? 2 : 1;
@@ -5002,11 +5017,11 @@ unmeta_one(const char *in, int *sz)
     *sz = mb_metacharlenconv_r(in, &wc, &wstate);
 #else
     if (in[0] == Meta) {
-      *sz = 2;
-      wc = STOUC(in[1] ^ 32);
+	*sz = 2;
+	wc = (unsigned char) (in[1] ^ 32);
     } else {
-      *sz = 1;
-      wc = STOUC(in[0]);
+	*sz = 1;
+	wc = (unsigned char) in[0];
     }
 #endif
     return wc;
@@ -5041,11 +5056,11 @@ ztrcmp(char const *s1, char const *s2)
 
     if(!(c1 = *s1))
 	c1 = -1;
-    else if(c1 == STOUC(Meta))
+    else if(c1 == (unsigned char) Meta)
 	c1 = *++s1 ^ 32;
     if(!(c2 = *s2))
 	c2 = -1;
-    else if(c2 == STOUC(Meta))
+    else if(c2 == (unsigned char) Meta)
 	c2 = *++s2 ^ 32;
 
     if(c1 == c2)
@@ -5477,7 +5492,7 @@ mb_metacharlenconv_r(const char *s, wint_t *wcp, mbstate_t *mbsp)
     const char *ptr;
     wchar_t wc;
 
-    if (STOUC(*s) <= 0x7f) {
+    if ((unsigned char) *s <= 0x7f) {
 	if (wcp)
 	    *wcp = (wint_t)*s;
 	return 1;
@@ -5535,10 +5550,10 @@ mb_metacharlenconv_r(const char *s, wint_t *wcp, mbstate_t *mbsp)
 mod_export int
 mb_metacharlenconv(const char *s, wint_t *wcp)
 {
-    if (!isset(MULTIBYTE) || STOUC(*s) <= 0x7f) {
+    if (!isset(MULTIBYTE) || (unsigned char) *s <= 0x7f) {
 	/* treat as single byte, possibly metafied */
 	if (wcp)
-	    *wcp = (wint_t)STOUC(*s == Meta ? s[1] ^ 32 : *s);
+	    *wcp = (wint_t)(unsigned char) (*s == Meta ? s[1] ^ 32 : *s);
 	return 1 + (*s == Meta);
     }
     /*
@@ -5600,7 +5615,7 @@ mb_metastrlenend(char *ptr, int width, char *eptr)
 	    inchar = *ptr;
 	ptr++;
 
-	if (complete && STOUC(inchar) <= STOUC(0x7f)) {
+	if (complete && (unsigned char) inchar <= (unsigned char) 0x7f) {
 	    /*
 	     * We rely on 7-bit US-ASCII as a subset, so skip
 	     * multibyte handling if we have such a character.
@@ -5676,7 +5691,7 @@ mb_charlenconv_r(const char *s, int slen, wint_t *wcp, mbstate_t *mbsp)
     const char *ptr;
     wchar_t wc;
 
-    if (slen && STOUC(*s) <= 0x7f) {
+    if (slen && (unsigned char) *s <= 0x7f) {
 	if (wcp)
 	    *wcp = (wint_t)*s;
 	return 1;
@@ -5717,7 +5732,7 @@ mb_charlenconv_r(const char *s, int slen, wint_t *wcp, mbstate_t *mbsp)
 mod_export int
 mb_charlenconv(const char *s, int slen, wint_t *wcp)
 {
-    if (!isset(MULTIBYTE) || STOUC(*s) <= 0x7f) {
+    if (!isset(MULTIBYTE) || (unsigned char) *s <= 0x7f) {
 	if (wcp)
 	    *wcp = (wint_t)*s;
 	return 1;
@@ -5736,7 +5751,7 @@ mod_export int
 metacharlenconv(const char *x, int *c)
 {
     /*
-     * Here we don't use STOUC() on the chars since they
+     * Here we don't use an (unsigned char)  cast on the chars since they
      * may be compared against other chars and this will fail
      * if chars are signed and the high bit is set.
      */
@@ -5798,7 +5813,7 @@ sb_niceformat(const char *s, FILE *stream, char **outstrp, int flags)
     eptr = ptr + umlen;
 
     while (ptr < eptr) {
-	int c = STOUC(*ptr);
+	int c = (unsigned char) *ptr;
 	if (c == '\'' && (flags & NICEFLAG_QUOTE)) {
 	    fmt = "\\'";
 	    newl = 2;
@@ -6015,9 +6030,9 @@ addunprintable(char *v, const char *u, const char *uend)
 	 */
 	int c;
 	if (*u == Meta)
-	    c = STOUC(*++u ^ 32);
+	    c = (unsigned char) (*++u ^ 32);
 	else
-	    c = STOUC(*u);
+	    c = (unsigned char) *u;
 	switch (c) {
 	case '\0':
 	    *v++ = '\\';
@@ -7123,7 +7138,7 @@ getkeystring(char *s, int *len, int how, int *misc)
 	    continue;
 #ifdef MULTIBYTE_SUPPORT
 	} else if ((how & GETKEY_SINGLE_CHAR) &&
-		   isset(MULTIBYTE) && STOUC(*s) > 127) {
+		   isset(MULTIBYTE) && (unsigned char) *s > 127) {
 	    wint_t wc;
 	    int len;
 	    len = mb_metacharlenconv(s, &wc);
@@ -7226,7 +7241,7 @@ getkeystring(char *s, int *len, int how, int *misc)
 	    t = tbuf;
 	}
 	if ((how & GETKEY_SINGLE_CHAR) && t != tmp) {
-	    *misc = STOUC(tmp[0]);
+	    *misc = (unsigned char) tmp[0];
 	    return s + 1;
 	}
     }

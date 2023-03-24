@@ -53,7 +53,7 @@ execfor(Estate state, int do_exec)
     wordcode code = state->pc[-1];
     int iscond = (WC_FOR_TYPE(code) == WC_FOR_COND), ctok = 0, atok = 0;
     int last = 0;
-    char *name, *str, *cond = NULL, *advance = NULL;
+    char *str, *cond = NULL, *advance = NULL;
     zlong val = 0;
     LinkList vars = NULL, args = NULL;
     int old_simple_pline = simple_pline;
@@ -151,7 +151,7 @@ execfor(Estate state, int do_exec)
 	    int count = 0;
 	    for (node = firstnode(vars); node; incnode(node))
 	    {
-		name = (char *)getdata(node);
+		char *name = (char *)getdata(node);
 		if (!args || !(str = (char *) ugetnode(args)))
 		{
 		    if (count) { 
@@ -165,7 +165,7 @@ execfor(Estate state, int do_exec)
 		    fprintf(xtrerr, "%s=%s\n", name, str);
 		    fflush(xtrerr);
 		}
-		setsparam(name, ztrdup(str));
+		setloopvar(name, ztrdup(str));
 		count++;
 	    }
 	    if (!count)
@@ -208,7 +208,7 @@ execfor(Estate state, int do_exec)
     loops--;
     simple_pline = old_simple_pline;
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
     return lastval;
 }
 
@@ -282,7 +282,7 @@ execselect(Estate state, UNUSED(int do_exec))
 		    /* Keep any user interrupt error status */
 		    errflag = oef | (errflag & ERRFLAG_INT);
 	    	} else {
-		    str = promptexpand(prompt3, 0, NULL, NULL, NULL);
+		    str = promptexpand(prompt3, 0, NULL, NULL);
 		    zputs(str, stderr);
 		    free(str);
 		    fflush(stderr);
@@ -336,7 +336,7 @@ execselect(Estate state, UNUSED(int do_exec))
     loops--;
     simple_pline = old_simple_pline;
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
     return lastval;
 }
 
@@ -428,7 +428,7 @@ execwhile(Estate state, UNUSED(int do_exec))
     } else {
         for (;;) {
             state->pc = loop;
-            noerrexit = NOERREXIT_EXIT | NOERREXIT_RETURN;
+            noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN;
 
 	    /* In case the test condition is a functional no-op,
 	     * make sure signal handlers recognize ^C to end the loop. */
@@ -478,7 +478,7 @@ execwhile(Estate state, UNUSED(int do_exec))
     popheap();
     loops--;
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
     return lastval;
 }
 
@@ -532,7 +532,7 @@ execrepeat(Estate state, UNUSED(int do_exec))
     loops--;
     simple_pline = old_simple_pline;
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
     return lastval;
 }
 
@@ -569,25 +569,16 @@ execif(Estate state, int do_exec)
 	s = 1;
 	state->pc = next;
     }
+    noerrexit = olderrexit;
 
     if (run) {
-	/* we need to ignore lastval until we reach execcmd() */
-	if (olderrexit || run == 2)
-	    noerrexit = olderrexit;
-	else if (lastval)
-	    noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN | NOERREXIT_UNTIL_EXEC;
-	else
-	    noerrexit &= ~ (NOERREXIT_EXIT | NOERREXIT_RETURN);
 	cmdpush(run == 2 ? CS_ELSE : (s ? CS_ELIFTHEN : CS_IFTHEN));
 	execlist(state, 1, do_exec);
 	cmdpop();
-    } else {
-	noerrexit = olderrexit;
-	if (!retflag && !errflag)
-	    lastval = 0;
-    }
+    } else if (!retflag && !errflag)
+	lastval = 0;
     state->pc = end;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
 
     return lastval;
 }
@@ -701,7 +692,7 @@ execcase(Estate state, int do_exec)
 
     if (!anypatok)
 	lastval = 0;
-    this_noerrexit = (WC_SUBLIST_TYPE(*end) != WC_SUBLIST_END);
+    this_noerrexit = 1;
 
     return lastval;
 }
@@ -793,6 +784,7 @@ exectry(Estate state, int do_exec)
     cmdpop();
     popheap();
     state->pc = end;
+    this_noerrexit = 1;
 
     return endval;
 }

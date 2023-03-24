@@ -110,6 +110,11 @@
 *>*foo:1: 1: no arguments given
 >reached
 
+  message="expand me and remove quotes"
+  (: ${UNSET_PARAM?$message})
+1:${...?....} performs expansion on the message
+?(eval):2: UNSET_PARAM: expand me and remove quotes
+
   print ${set1:+word1} ${set1+word2} ${null1:+word3} ${null1+word4}
   print ${unset1:+word5} ${unset1+word6}
 0:${...:+...}, ${...+...}
@@ -2302,6 +2307,13 @@ F:behavior, see http://austingroupbugs.net/view.php?id=888
 >x
 >y
 
+  a="string"
+  print ${(S)a//#%((#b)(*))/different}
+  print $match[1]
+0:Fully anchored string must be fully searched
+>different
+>string
+
   my_width=6
   my_index=1
   my_options=Option1
@@ -2726,4 +2738,19 @@ F:behavior, see http://austingroupbugs.net/view.php?id=888
  : ${(zZ+x+):-}
 1:parameter expansion flags parsing error gives a clue
 ?(eval):1: error in flags near position 7 in '${(zZ+x+):-}'
+
+ slash='/'
+ print -r -- x${slash/'/'}y
+-Df:(users/28784) substituting a single-quoted backslash, part #1: slash
+>xy
+
+ single_quote="'"
+ print -r -- x${single_quote/'/'}y
+-Df:(users/28784) substituting a single-quoted backslash, part #2: single quote
+>x/y
+
+ control="foobar"
+ print -r -- x${control/'bar'}y
+0:(users/28784 inspired this) substituting a single-quoted backslash, part #3: control
+>xfooy
 

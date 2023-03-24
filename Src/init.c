@@ -500,10 +500,10 @@ parseopts(char *nam, char ***argvp, char *new_opts, char **cmdp,
 		    }
 		}
               break;
-	    } else if (isspace(STOUC(**argv))) {
+	    } else if (isspace((unsigned char) **argv)) {
 		/* zsh's typtab not yet set, have to use ctype */
 		while (*++*argv)
-		    if (!isspace(STOUC(**argv))) {
+		    if (!isspace((unsigned char) **argv)) {
 		     badoptionstring:
 			WARN_OPTION("bad option string: '%s'", args);
 			return 1;
@@ -747,7 +747,7 @@ init_shout(void)
 static char *tccapnams[TC_COUNT] = {
     "cl", "le", "LE", "nd", "RI", "up", "UP", "do",
     "DO", "dc", "DC", "ic", "IC", "cd", "ce", "al", "dl", "ta",
-    "md", "so", "us", "me", "se", "ue", "ch",
+    "md", "mh", "so", "us", "ZH", "me", "se", "ue", "ZR", "ch",
     "ku", "kd", "kl", "kr", "sc", "rc", "bc", "AF", "AB"
 };
 
@@ -872,6 +872,23 @@ init_term(void)
 	/* The following is an attempt at a heuristic,
 	 * but it fails in some cases */
 	/* rprompt_indent = ((hasam && !hasbw) || hasye || !tccan(TCLEFT)); */
+
+	/* if there's no termcap entry for italics, use CSI 3 m */
+	if (!tccan(TCITALICSBEG)) {
+	    zsfree(tcstr[TCITALICSBEG]);
+	    tcstr[TCITALICSBEG] = ztrdup("\033[3m");
+	    tclen[TCITALICSBEG] = 4;
+	}
+	if (!tccan(TCITALICSEND)) {
+	    zsfree(tcstr[TCITALICSEND]);
+	    tcstr[TCITALICSEND] = ztrdup("\033[23m");
+	    tclen[TCITALICSEND] = 5;
+	}
+	if (!tccan(TCFAINTBEG)) {
+	    zsfree(tcstr[TCFAINTBEG]);
+	    tcstr[TCFAINTBEG] = ztrdup("\033[2m");
+	    tclen[TCFAINTBEG] = 4;
+	}
     }
     return 1;
 }
@@ -1654,8 +1671,7 @@ VA_DCL
 
 	lp = va_arg(ap, char **);
 
-	pptbuf = unmetafy(promptexpand(lp ? *lp : NULL, 0, NULL, NULL,
-				       NULL),
+	pptbuf = unmetafy(promptexpand(lp ? *lp : NULL, 0, NULL, NULL),
 			  &pptlen);
 	write_loop(2, pptbuf, pptlen);
 	free(pptbuf);
@@ -1724,9 +1740,9 @@ zsh_main(UNUSED(int argc), char **argv)
      * interactive
      */
     typtab['\0'] |= IMETA;
-    typtab[STOUC(Meta)  ] |= IMETA;
-    typtab[STOUC(Marker)] |= IMETA;
-    for (t0 = (int)STOUC(Pound); t0 <= (int)STOUC(Nularg); t0++)
+    typtab[(unsigned char) Meta  ] |= IMETA;
+    typtab[(unsigned char) Marker] |= IMETA;
+    for (t0 = (int) (unsigned char) Pound; t0 <= (int) (unsigned char) Nularg; t0++)
 	typtab[t0] |= ITOK | IMETA;
 
     for (t = argv; *t; *t = metafy(*t, -1, META_ALLOC), t++);

@@ -2470,10 +2470,11 @@ command.  tt(run-help) is normally aliased to tt(man).
 tindex(vi-set-buffer)
 item(tt(vi-set-buffer) (unbound) (tt(")) (unbound))(
 Specify a buffer to be used in the following command.
-There are 37 buffers that can be specified:
+There are 39 buffers that can be specified:
 the 26 `named' buffers tt("a) to tt("z), the `yank' buffer tt("0),
-the nine `queued' buffers tt("1) to tt("9) and the `black hole' buffer
-tt("_).  The named buffers can also be specified as tt("A) to tt("Z).
+the nine `queued' buffers tt("1) to tt("9), the `black hole' buffer
+tt("_) and the system selection tt("*) and clipboard tt("+).
+The named buffers can also be specified as tt("A) to tt("Z).
 
 When a buffer is specified for a cut, change or yank command, the text
 concerned replaces the previous contents of the specified buffer. If
@@ -2481,6 +2482,10 @@ a named buffer is specified using a capital, the newly cut text is
 appended to the buffer instead of overwriting it. When using the tt("_)
 buffer, nothing happens. This can be useful for deleting text without
 affecting any buffers.
+
+Updating the system clipboard relies on specific support from the terminal.
+Reading it is not possible so a paste command with tt("*) or tt("+) will do
+nothing.
 
 If no buffer is specified for a cut or change command, tt("1) is used, and
 the contents of tt("1) to tt("8) are each shifted along one buffer;
@@ -2686,6 +2691,9 @@ for different completions.
 item(tt(paste))(
 Following a command to paste text, the characters that were inserted.
 )
+item(tt(ellipsis))(
+Markers used to indicate where the text doesn't fit within the terminal.
+)
 enditem()
 
 When tt(region_highlight) is set, the contexts that describe a region DASH()-
@@ -2775,8 +2783,12 @@ This works similarly to the foreground colour, except the background is
 not usually affected by the bold attribute.
 )
 item(tt(bold))(
-The characters in the given context are shown in a bold font.
+The characters in the given context are shown with a bold font weight.
 Not all terminals distinguish bold fonts.
+)
+item(tt(faint))(
+The characters in the given context are shown with a faint font weight.
+Not all terminals distinguish faint fonts.
 )
 item(tt(standout))(
 The characters in the given context are shown in the terminal's standout
@@ -2790,6 +2802,10 @@ item(tt(underline))(
 The characters in the given context are shown underlined.  Some
 terminals show the foreground in a different colour instead; in this
 case whitespace will not be highlighted.
+)
+item(tt(italic))(
+The characters in the given context are shown in a italic font.
+Not all terminals support italic fonts.
 )
 enditem()
 

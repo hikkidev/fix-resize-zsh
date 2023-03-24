@@ -220,7 +220,7 @@ shingetchar(void)
     int nread, rsize = isset(SHINSTDIN) ? 1 : SHINBUFSIZE;
 
     if (shinbufptr < shinbufendptr)
-	return STOUC(*shinbufptr++);
+	return (unsigned char) *shinbufptr++;
 
     shinbufreset();
 #ifdef USE_LSEEK
@@ -242,7 +242,7 @@ shingetchar(void)
 		zerr("lseek(%d, %d): %e", SHIN, -(nread - rsize), errno);
 	} else
 	    shinbufendptr = shinbuffer + nread;
-	return STOUC(*shinbufptr++);
+	return (unsigned char) *shinbufptr++;
     }
 #endif
     for (;;) {
@@ -259,7 +259,7 @@ shingetchar(void)
     }
     if (shinbufendptr == shinbuffer)
         return -1;
-    return STOUC(*shinbufptr++);
+    return (unsigned char) *shinbufptr++;
 }
 
 /* Read a line from SHIN.  Convert tokens and   *
@@ -328,7 +328,7 @@ ingetc(void)
 	if (inbufleft) {
 	    inbufleft--;
 	    inbufct--;
-	    if (itok(lastc = STOUC(*inbufptr++)))
+	    if (itok(lastc = (unsigned char) *inbufptr++))
 		continue;
 	    if (((inbufflags & INP_LINENO) || !strin) && lastc == '\n')
 		lineno++;
@@ -402,7 +402,7 @@ inputline(void)
 	    char *pptbuf;
 	    int pptlen;
 	    pptbuf = unmetafy(promptexpand(ingetcpmptl ? *ingetcpmptl : NULL,
-					   0, NULL, NULL, NULL), &pptlen);
+					   0, NULL, NULL), &pptlen);
 	    write_loop(2, pptbuf, pptlen);
 	    free(pptbuf);
 	}
@@ -816,6 +816,7 @@ char *input_hasalias(void)
 {
     int flags = inbufflags;
     struct instacks *instackptr = instacktop;
+    char *alias_nam = NULL;
 
     for (;;)
     {
@@ -824,9 +825,9 @@ char *input_hasalias(void)
 	DPUTS(instackptr == instack, "BUG: continuation at bottom of instack");
 	instackptr--;
 	if (instackptr->alias)
-	    return instackptr->alias->node.nam;
+	    alias_nam = instackptr->alias->node.nam;
 	flags = instackptr->flags;
     }
 
-    return NULL;
+    return alias_nam;
 }

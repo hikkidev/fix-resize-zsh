@@ -556,7 +556,7 @@ multsub(char **s, int pf_flags, char ***a, int *isarr, char *sep,
 	for ( ; *x; x += l) {
 	    char c = (l = *x == Meta) ? x[1] ^ 32 : *x;
 	    l++;
-	    if (!iwsep(STOUC(c)))
+	    if (!iwsep((unsigned char) c))
 		break;
 	    *ms_flags |= MULTSUB_WS_AT_START;
 	}
@@ -573,7 +573,7 @@ multsub(char **s, int pf_flags, char ***a, int *isarr, char *sep,
 	    convchar_t c;
 	    if (*x == Dash)
 		*x = '-';
-	    if (itok(STOUC(*x))) {
+	    if (itok((unsigned char) *x)) {
 		/* token, can't be separator, must be single byte */
 		rawc = *x;
 		l = 1;
@@ -582,7 +582,7 @@ multsub(char **s, int pf_flags, char ***a, int *isarr, char *sep,
 		if (!inq && !inp && WC_ZISTYPE(c, ISEP)) {
 		    *x = '\0';
 		    for (x += l; *x; x += l) {
-			if (itok(STOUC(*x))) {
+			if (itok((unsigned char) *x)) {
 			    /* as above */
 			    rawc = *x;
 			    l = 1;
@@ -1818,14 +1818,14 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
      * Use for the (k) flag.  Goes down into the parameter code,
      * sometimes.
      */
-    char hkeys = 0;
+    int hkeys = 0;
     /*
      * Used for the (v) flag, ditto.  Not quite sure why they're
      * separate, but the tradition seems to be that things only
      * get combined when that makes the result more obscure rather
      * than less.
      */
-    char hvals = 0;
+    int hvals = 0;
     /*
      * Whether we had to evaluate a subexpression, i.e. an
      * internal ${...} or $(...) or plain $pm.  We almost don't
@@ -1870,8 +1870,8 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
      * these later on, too.
      */
     c = *s;
-    if (itype_end(s, IIDENT, 1) == s && *s != '#' && c != Pound &&
-	!IS_DASH(c) &&
+    if (itype_end(s, (c == Inbrace ? INAMESPC : IIDENT), 1) == s &&
+	*s != '#' && c != Pound && !IS_DASH(c) &&
 	c != '!' && c != '$' && c != String && c != Qstring &&
 	c != '?' && c != Quest &&
 	c != '*' && c != Star && c != '@' && c != '{' &&
@@ -1891,15 +1891,30 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	s++;
 	/*
 	 * In ksh emulation a leading `!' is a special flag working
-	 * sort of like our (k).
+	 * sort of like our (k).  This is true only for arrays or
+	 * associative arrays and only with subscripts [*] or [@],
+	 * so zsh's implementation is approximate.  For namerefs
+	 * in ksh, ${!ref} substitues the parameter name at the
+	 * end of any chain of references, rather than the value.
+	 *
 	 * TODO: this is one of very few cases tied directly to
 	 * the emulation mode rather than an option.  Since ksh
 	 * doesn't have parameter flags it might be neater to
 	 * handle this with the ^, =, ~ stuff, below.
 	 */
 	if ((c = *s) == '!' && s[1] != Outbrace && EMULATION(EMULATE_KSH)) {
-	    hkeys = SCANPM_WANTKEYS;
+	    hkeys = SCANPM_WANTKEYS|SCANPM_NONAMEREF;
 	    s++;
+	    /* There's a slew of other special bash meanings of parameter
+	     * references that start with "!":
+	     *  ${!name} == ${(P)name} (when name is not a nameref)
+	     *  ${!name*} == ${(k)parameters[(I)name*]}
+	     *  ${!name@} == ${(@k)parameters[(I)name*]}
+	     *  ${!name[*]} == ${(k)name} (but indexes of ordinary arrays, too)
+	     *  ${!name[@]} == ${(@k)name} (ditto, as noted above for ksh)
+	     *
+	     * See also workers/34390, workers/34397, workers/34408.
+	     */
 	} else if (c == '(' || c == Inpar) {
 	    char *t, sav;
 	    int tt = 0;
@@ -2154,10 +2169,19 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 		    escapes = 1;
 		    break;
 
+		case '!':
+		    if ((hkeys|hvals) & ~SCANPM_NONAMEREF)
+			goto flagerr;
+		    hkeys = SCANPM_NONAMEREF;
+		    break;
 		case 'k':
+		    if (hkeys & ~SCANPM_WANTKEYS)
+			goto flagerr;
 		    hkeys = SCANPM_WANTKEYS;
 		    break;
 		case 'v':
+		    if (hvals & ~SCANPM_WANTVALS)
+			goto flagerr;
 		    hvals = SCANPM_WANTVALS;
 		    break;
 
@@ -2308,7 +2332,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
     /*
      * Look for special unparenthesised flags.
      * TODO: could make these able to appear inside parentheses, too,
-     * i.e. ${(^)...} etc.
+     * i.e. ${(^)...} etc., but ${(~)...} already has another meaning.
      */
     for (;;) {
 	if ((c = *s) == '^' || c == Hat) {
@@ -2332,7 +2356,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	    }
 	} else if ((c == '#' || c == Pound) &&
 		   (inbrace || !isset(POSIXIDENTIFIERS)) &&
-		   (itype_end(s+1, IIDENT, 0) != s + 1
+		   (itype_end(s+1, INAMESPC, 0) != s + 1
 		    || (cc = s[1]) == '*' || cc == Star || cc == '@'
 		    || cc == '?' || cc == Quest
 		    || cc == '$' || cc == String || cc == Qstring
@@ -2369,8 +2393,9 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	     * Try to handle this when parameter is named
 	     * by (P) (second part of test).
 	     */
-	    if (itype_end(s+1, IIDENT, 0) != s+1 || (aspar && isstring(s[1]) &&
-				 (s[2] == Inbrace || s[2] == Inpar)))
+	    if (itype_end(s+1, INAMESPC, 0) != s+1 ||
+		(aspar && isstring(s[1]) &&
+		 (s[2] == Inbrace || s[2] == Inpar)))
 		chkset = 1, s++;
 	    else if (!inbrace) {
 		/* Special case for `$+' on its own --- leave unmodified */
@@ -2531,6 +2556,8 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	    scanflags |= SCANPM_DQUOTED;
 	if (chkset)
 	    scanflags |= SCANPM_CHECKING;
+	if (!inbrace)
+	    scanflags |= SCANPM_NONAMESPC;
 	/*
 	 * Second argument: decide whether to use the subexpression or
 	 *   the string next on the line as the parameter name.
@@ -2573,13 +2600,14 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 			       !(v->pm->node.flags & PM_UNSET))) {
 		int f = v->pm->node.flags;
 
-		switch (PM_TYPE(f)) {
+		switch (PM_TYPE(f)|(f & PM_NAMEREF)) {
 		case PM_SCALAR:  val = "scalar"; break;
 		case PM_ARRAY:   val = "array"; break;
 		case PM_INTEGER: val = "integer"; break;
 		case PM_EFLOAT:
 		case PM_FFLOAT:  val = "float"; break;
 		case PM_HASHED:  val = "association"; break;
+		case PM_NAMEREF: val = "nameref"; break;
 		}
 		val = dupstring(val);
 		if (v->pm->level)
@@ -2926,6 +2954,9 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	 */
 	if (!(flags & (SUB_MATCH|SUB_REST|SUB_BIND|SUB_EIND|SUB_LEN)))
 	    flags |= SUB_REST;
+	/* If matching at start and end, don't stop early */
+	if ((flags & (SUB_START|SUB_END)) == (SUB_START|SUB_END))
+	    flags |= SUB_LONG;
 
 	/*
 	 * With ":" treat a value as unset if the variable is set but
@@ -3076,7 +3107,11 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	    if (vunset) {
                 if (isset(EXECOPT)) {
                     *idend = '\0';
-                    zerr("%s: %s", idbeg, *s ? s : "parameter not set");
+		    if (*s){
+			singsub(&s);
+			zerr("%s: %s", idbeg, s);
+		    } else
+			zerr("%s: %s", idbeg, "parameter not set");
                     /*
                      * In interactive shell we need to return to
                      * top-level prompt --- don't clear this error
@@ -3203,7 +3238,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	    shortest = 0;
 	    ++s;
 	}
-	if (*itype_end(s, IIDENT, 0)) {
+	if (*itype_end(s, INAMESPC, 0)) {
 	    untokenize(s);
 	    zerr("not an identifier: %s", s);
 	    return NULL;
@@ -3263,7 +3298,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
 	int intersect = (*s == '*' || *s == Star);
 	char **compare, **ap, **apsrc;
 	++s;
-	if (*itype_end(s, IIDENT, 0)) {
+	if (*itype_end(s, INAMESPC, 0)) {
 	    untokenize(s);
 	    zerr("not an identifier: %s", s);
 	    return NULL;
@@ -3716,6 +3751,8 @@ colonsubscript:
     if (presc) {
 	int ops = opts[PROMPTSUBST], opb = opts[PROMPTBANG];
 	int opp = opts[PROMPTPERCENT];
+	zattr savecurrent = txtcurrentattrs;
+	zattr saveunknown = txtunknownattrs;
 
 	if (presc < 2) {
 	    opts[PROMPTPERCENT] = 1;
@@ -3738,7 +3775,8 @@ colonsubscript:
 	    for (; *ap; ap++) {
 		char *tmps;
 		untokenize(*ap);
-		tmps = promptexpand(*ap, 0, NULL, NULL, NULL);
+		txtunknownattrs = TXT_ATTR_ALL;
+		tmps = promptexpand(*ap, 0, NULL, NULL);
 		*ap = dupstring(tmps);
 		free(tmps);
 	    }
@@ -3747,10 +3785,14 @@ colonsubscript:
 	    if (!copied)
 		val = dupstring(val), copied = 1;
 	    untokenize(val);
-	    tmps = promptexpand(val, 0, NULL, NULL, NULL);
+	    txtunknownattrs = TXT_ATTR_ALL;
+	    tmps = promptexpand(val, 0, NULL, NULL);
 	    val = dupstring(tmps);
 	    free(tmps);
 	}
+
+	txtpendingattrs = txtcurrentattrs = savecurrent;
+	txtunknownattrs = saveunknown;
 	opts[PROMPTSUBST] = ops;
 	opts[PROMPTBANG] = opb;
 	opts[PROMPTPERCENT] = opp;

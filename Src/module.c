@@ -1198,6 +1198,7 @@ add_autoparam(const char *module, const char *pnam, int flags)
 {
     Param pm;
     int ret;
+    int ne = noerrs;
 
     queue_signals();
     if ((ret = checkaddparam(pnam, (flags & FEAT_IGNORE)))) {
@@ -1212,14 +1213,18 @@ add_autoparam(const char *module, const char *pnam, int flags)
 	return ret == 2 ? 0 : -1;
     }
 
-    pm = setsparam(dupstring(pnam), ztrdup(module));
-
-    pm->node.flags |= PM_AUTOLOAD;
-    if (flags & FEAT_AUTOALL)
-	pm->node.flags |= PM_AUTOALL;
+    noerrs = 2;
+    if ((pm = setsparam(dupstring(pnam), ztrdup(module)))) {
+	pm->node.flags |= PM_AUTOLOAD;
+	if (flags & FEAT_AUTOALL)
+	    pm->node.flags |= PM_AUTOALL;
+	ret = 0;
+    } else
+	ret = -1;
+    noerrs = ne;
     unqueue_signals();
 
-    return 0;
+    return ret;
 }
 
 /* Remove a parameter added with add_autoparam() */
@@ -2474,7 +2479,7 @@ bin_zmodload(char *nam, char **args, Options ops, UNUSED(int func))
 	return 1;
     }
     for (fp = fonly; *fp; fp++) {
-	if (OPT_ISSET(ops,STOUC(*fp)) && !OPT_ISSET(ops,'F')) {
+	if (OPT_ISSET(ops,(unsigned char) *fp) && !OPT_ISSET(ops,'F')) {
 	    zwarnnam(nam, "-%c is only allowed with -F", *fp);
 	    return 1;
 	}

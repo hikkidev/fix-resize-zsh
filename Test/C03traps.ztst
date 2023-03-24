@@ -670,6 +670,22 @@ F:Must be tested with a top-level script rather than source or function
 >before-out
 >before-in
 
+  (set -o err_return
+    fn() {
+      print before-in
+      { false; true } && true
+      print after-in
+    }
+    print before-out
+    fn && true
+    print after-out
+  )
+0:ERR_RETURN not triggered on LHS of "&&" in function on LHS of "&&" (regression test)
+>before-out
+>before-in
+>after-in
+>after-out
+
   mkdir -p zdotdir
   print >zdotdir/.zshenv '
   setopt norcs errreturn
@@ -721,21 +737,55 @@ F:Must be tested with a top-level script rather than source or function
 >Good
 
   (setopt err_exit
+  ! true
+  print OK
+  )
+0:ERR_EXIT not triggered by "! true"
+>OK
+
+  (setopt err_exit
+  fn() { true }
+  ! fn
+  print OK
+  )
+0:ERR_EXIT not triggered by "! fn"
+>OK
+
+  (setopt err_exit
+  false && true
+  print OK
+  )
+0:ERR_EXIT not triggered by "false && true"
+>OK
+
+  (setopt err_exit
+  fn() {
+    false && true
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by "false && true" but by return from fn
+
+  (setopt err_exit
   for x in y; do
     false && true
   done
   print OK
   )
-1:ERR_EXIT triggered by status 1 at end of for
+0:ERR_EXIT not triggered by status 1 at end of for
+>OK
 
   (setopt err_exit
-  integer x=0
-  while (( ! x++ )); do
-    false && true
-  done
+  fn() {
+    for x in y; do
+      false && true
+    done
+  }
+  fn
   print OK
   )
-1:ERR_EXIT triggered by status 1 at end of while
+1:ERR_EXIT not triggered by status 1 at end of for but by return from fn
 
   (setopt err_exit
   repeat 1; do
@@ -743,7 +793,19 @@ F:Must be tested with a top-level script rather than source or function
   done
   print OK
   )
-1:ERR_EXIT triggered by status 1 at end of repeat
+0:ERR_EXIT not triggered by status 1 at end of repeat
+>OK
+
+  (setopt err_exit
+  fn() {
+    repeat 1; do
+      false && true
+    done
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by status 1 at end of repeat but by return from fn
 
   (setopt err_exit
   if true; then
@@ -751,7 +813,73 @@ F:Must be tested with a top-level script rather than source or function
   fi
   print OK
   )
-1:ERR_EXIT triggered by status 1 at end of if
+0:ERR_EXIT not triggered by status 1 at end of if
+>OK
+
+  (setopt err_exit
+  fn() {
+    if true; then
+      false && true
+    fi
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by status 1 at end of if but by return from fn
+
+  (setopt err_exit
+  loop=true
+  while print COND; $loop; do
+    loop=false
+    false && true
+  done
+  print OK
+  )
+0:ERR_EXIT not triggered by status 1 at end of while
+>COND
+>COND
+>OK
+
+  (setopt err_exit
+  fn() {
+    loop=true
+    while print COND; $loop; do
+      loop=false
+      false && true
+    done
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by status 1 at end of while but by return from fn
+>COND
+>COND
+
+  (setopt err_exit
+  {
+    false && true
+  } always {
+    print ALWAYS
+  }
+  print OK
+  )
+0:ERR_EXIT not triggered by status 1 at end of always
+>ALWAYS
+>OK
+
+  (setopt err_exit
+  fn() {
+    {
+      false && true
+    } always {
+      print ALWAYS
+    }
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by status 1 at end of always but by return from fn
+>ALWAYS
 
   (setopt err_exit
   {
@@ -759,7 +887,19 @@ F:Must be tested with a top-level script rather than source or function
   }
   print OK
   )
-1:ERR_EXIT triggered by status 1 at end of { }
+0:ERR_EXIT not triggered by status 1 at end of { }
+>OK
+
+  (setopt err_exit
+  fn() {
+    {
+      false && true
+    }
+  }
+  fn
+  print OK
+  )
+1:ERR_EXIT not triggered by status 1 at end of { } but by return from fn
 
   unsetopt err_exit err_return
   (setopt err_exit
@@ -813,6 +953,47 @@ F:Must be tested with a top-level script rather than source or function
   )
 1:ERR_EXIT triggered by status 1 at end of anon func
 >Still functioning
+
+  (setopt err_exit
+  loop=true; while print loop $? >&2; $loop; do loop=false; false && true; done
+  print done $? >&2
+  )
+0: ERR_EXIT neither triggered inside loop nor triggered by while statement
+?loop 0
+?loop 1
+?done 1
+
+  (setopt err_exit
+  { loop=true; while print loop $? >&2; $loop; do loop=false; false && true; done } || false
+  print done $? >&2
+  )
+1: ERR_EXIT not triggered inside loop but triggered by rhs of ||
+?loop 0
+?loop 1
+
+  (setopt err_exit
+  eval 'loop=true; while print loop $? >&2; $loop; do loop=false; false && true; done'
+  print done $? >&2
+  )
+1: ERR_EXIT not triggered inside loop but triggered by eval
+?loop 0
+?loop 1
+
+  (setopt err_exit
+  source <(echo 'loop=true; while print loop $? >&2; $loop; do loop=false; false && true; done')
+  print done $? >&2
+  )
+1: ERR_EXIT not triggered inside loop but triggered by source
+?loop 0
+?loop 1
+
+  (setopt err_exit
+  v=$(loop=true; while print loop $? >&2; $loop; do loop=false; false && true; done)
+  print done $? >&2
+  )
+1: ERR_EXIT not triggered inside loop but triggered by command substitution
+?loop 0
+?loop 1
 
   if zmodload zsh/system 2>/dev/null; then
   (

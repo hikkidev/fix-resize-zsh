@@ -1589,7 +1589,8 @@ Input is read from the coprocess.
 )
 item(tt(-d) var(delim))(
 Input is terminated by the first character of var(delim) instead of
-by newline.
+by newline.  For compatibility with other shells, if var(delim) is an
+empty string, input is terminated at the first NUL.
 )
 item(tt(-t) [ var(num) ])(
 Test if input is available before attempting to read.  If var(num)
@@ -1923,6 +1924,8 @@ redef(SPACES)(0)(tt(ifztexi(NOTRANS(@ @ @ @ @ @ @ @ ))ifnztexi(        )))
 xitem(tt(typeset )[ {tt(PLUS())|tt(-)}tt(AHUaghlmrtux) ] \
 [ {tt(PLUS())|tt(-)}tt(EFLRZip) [ var(n) ] ])
 xitem(SPACES()[ tt(+) ] [ var(name)[tt(=)var(value)] ... ])
+xitem(tt(typeset )[ {tt(PLUS())|tt(-)}tt(n) ] \
+[ tt(-gr) ] [ var(name)[tt(=)var(value)] ... ])
 xitem(tt(typeset )tt(-T) [ {tt(PLUS())|tt(-)}tt(Uglrux) ] [ {tt(PLUS())|tt(-)}tt(LRZp) [ var(n) ] ])
 xitem(SPACES()[ tt(+) | var(SCALAR)[tt(=)var(value)] var(array)[tt(=LPAR())var(value) ...tt(RPAR())] [ var(sep) ] ])
 item(tt(typeset) tt(-f) [ {tt(PLUS())|tt(-)}tt(TUkmtuz) ] [ tt(+) ] [ var(name) ... ])(
@@ -2035,6 +2038,27 @@ typeset var1 && var1=$(exit 1) || echo "Trouble with var1"
 To initialize a parameter var(param) to a command output and mark it readonly,
 use tt(typeset -r )var(param) or tt(readonly )var(param) after the parameter
 assignment statement.
+
+cindex(named reference)
+cindex(reference, named)
+The flag tt(-n) creates a em(named reference) to another parameter.
+The second parameter need not exist at the time the reference is
+created.  Only tt(-g) and tt(-r) may be used in conjunction with
+tt(-n).  The var(name) so created may not be an array element nor use
+a subscript, but the var(value) assigned may be any valid parameter
+name syntax, even a subscripted array element (including an associative
+array element) or an array slice, which is evaluated when the named
+reference is expanded.  It is an error for a named reference to refer
+to itself, even indirectly through a chain of references.
+See ifzman(zmanref(zshexpn))ifnzman(noderef(Parameter Expansion)) and
+ifzman(zmanref(zshparam))ifnzman(noderef(Parameters)) for details of the
+behavior of named references.
+
+Local function scoping rules for `tt(typeset)' do apply with `tt(-n)',
+so a declaration within a function persists only until the end of the
+function unless `tt(-g -n)' is specified, and any local parameter (of
+any type) with the same var(name) supplants a named reference from a
+surrounding scope.
 
 If no attribute flags are given, and either no var(name) arguments are
 present or the flag tt(+m) is used, then each parameter name printed is
@@ -2241,9 +2265,9 @@ automatically given the tt(-h) attribute to avoid name clashes.
 item(tt(-H))(
 Hide value: specifies that tt(typeset) will not display the value of the
 parameter when listing parameters; the display for such parameters is
-always as if the `tt(PLUS())' flag had been given.  Use of the parameter is
-in other respects normal, and the option does not apply if the parameter is
-specified by name, or by pattern with the tt(-m) option.  This is on by
+always as if the `tt(PLUS())' flag were given, but use of the parameter is
+in other respects normal.  This effect does not apply when the parameter is
+specified by name or by pattern with the tt(-m) option.  This is on by
 default for the parameters in the tt(zsh/parameter) and tt(zsh/mapfile)
 modules.  Note, however, that unlike the tt(-h) flag this is also useful
 for non-special parameters.
@@ -2422,7 +2446,7 @@ with the command `tt(zmodload -F zsh/rlimits b:unlimit)'.
 )
 findex(unset)
 cindex(parameters, unsetting)
-item(tt(unset) [ tt(-fmv) ] var(name) ...)(
+item(tt(unset) [ tt(-fmv) ] [ tt(-n) ] var(name) ...)(
 Each named parameter is unset.
 Local parameters remain local even if unset; they appear unset within scope,
 but the previous value will still reappear when the scope ends.
@@ -2436,10 +2460,13 @@ be quoted) and all parameters with matching names are unset.  Note that this
 cannot be used when unsetting associative array elements, as the subscript
 will be treated as part of the pattern.
 
-The tt(-v) flag specifies that var(name) refers to parameters. This is the
-default behaviour.
+The tt(-v) flag specifies that var(name) refers to parameters. This is
+the default behaviour.  If the tt(-n) option is supplied, and
+var(name) is a a named reference, var(name) will be unset rather than
+the variable it references.
 
-tt(unset -f) is equivalent to tt(unfunction).
+tt(unset -f) is equivalent to tt(unfunction).  The tt(-n) option has
+no effect with tt(-f).
 )
 findex(unsetopt)
 cindex(options, unsetting)
