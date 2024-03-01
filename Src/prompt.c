@@ -241,6 +241,67 @@ promptexpand(char *s, int ns, char *rs, char *Rs)
     return new_vars.buf;
 }
 
+/* Get the escape sequence for a given attribute. */
+/**/
+mod_export char *
+zattrescape(zattr atr, int *len)
+{
+    struct buf_vars new_vars;
+    zattr savecurrent = txtcurrentattrs;
+    zattr saveunknown = txtunknownattrs;
+
+    memset(&new_vars, 0, sizeof(new_vars));
+    new_vars.last = bv;
+    bv = &new_vars;
+    new_vars.bufspc = 256;
+    new_vars.bp = new_vars.bufline = new_vars.buf = zshcalloc(new_vars.bufspc);
+    new_vars.dontcount = 1;
+
+    txtunknownattrs = 0;
+    treplaceattrs(atr);
+    applytextattributes(TSC_PROMPT);
+
+    bv = new_vars.last;
+
+    txtpendingattrs = txtcurrentattrs = savecurrent;
+    txtunknownattrs = saveunknown;
+
+    return unmetafy(new_vars.buf, len);
+}
+
+/* Parse the argument for %H */
+static char *
+parsehighlight(char *arg, char endchar, zattr *atr)
+{
+    static int entered = 0;
+    char *var = ".zle.hlgroups";
+    struct value vbuf;
+    Value v;
+    char *ep, *attrs;
+    if ((ep = strchr(arg, endchar)))
+	*ep = '\0';
+    if (!entered && (v = getvalue(&vbuf, &var, 0)) &&
+	    PM_TYPE(v->pm->node.flags) == PM_HASHED)
+    {
+	Param node;
+	HashTable ht = v->pm->gsu.h->getfn(v->pm);
+	if (ht && (node = (Param) ht->getnode(ht, arg))) {
+	    attrs = node->gsu.s->getfn(node);
+	    entered = 1;
+	    if (match_highlight(attrs, atr, 0) == attrs)
+		*atr = TXT_ERROR;
+	} else
+	    *atr = TXT_ERROR;
+    } else
+	*atr = TXT_ERROR;
+    if (ep)
+	*ep = endchar;
+    else
+	ep = strchr(arg, '\0') - 1;
+    entered = 0;
+    return ep;
+}
+
 /* Parse the argument for %F and %K */
 static zattr
 parsecolorchar(zattr arg, int is_fg)
@@ -570,6 +631,15 @@ putpromptchar(int doprint, int endchar)
 	    case 'k':
 		tunsetattrs(TXTBGCOLOUR);
 	        applytextattributes(TSC_PROMPT);
+		break;
+	    case 'H':
+		if (bv->fm[1] == '{') {
+		    bv->fm = parsehighlight(bv->fm + 2, '}', &atr);
+		    if (atr != TXT_ERROR) {
+			treplaceattrs(atr);
+			applytextattributes(TSC_PROMPT);
+		    }
+		}
 		break;
 	    case '[':
 		if (idigit(*++bv->fm))
@@ -1844,23 +1914,30 @@ match_colour(const char **teststrp, int is_fg, int colour)
 /*
  * Match a set of highlights in the given teststr.
  * Set *on_var to reflect the values found.
+ * Set *layer to the layer
  * Return a pointer to the first character not consumed.
  */
 
 /**/
 mod_export const char *
-match_highlight(const char *teststr, zattr *on_var)
+match_highlight(const char *teststr, zattr *on_var, int *layer)
 {
     int found = 1;
 
     *on_var = 0;
     while (found && *teststr) {
 	const struct highlight *hl;
+	zattr atr = 0;
 
 	found = 0;
-	if (strpfx("fg=", teststr) || strpfx("bg=", teststr)) {
+	if (strpfx("hl=", teststr)) {
+	    teststr += 3;
+	    teststr = parsehighlight((char *)teststr, ',', &atr);
+	    if (atr != TXT_ERROR)
+		*on_var = atr;
+	    found = 1;
+	} else if (strpfx("fg=", teststr) || strpfx("bg=", teststr)) {
 	    int is_fg = (teststr[0] == 'f');
-	    zattr atr;
 
 	    teststr += 3;
 	    atr = match_colour(&teststr, is_fg, 0);
@@ -1872,6 +1949,14 @@ match_highlight(const char *teststr, zattr *on_var)
 	    /* skip out of range colours but keep scanning attributes */
 	    if (atr != TXT_ERROR)
 		*on_var |= atr;
+	} else if (layer && strpfx("layer=", teststr)) {
+	    teststr += 6;
+	    *layer = (int) zstrtol(teststr, (char **) &teststr, 10);
+	    if (*teststr == ',')
+		teststr++;
+	    else if (*teststr && *teststr != ' ')
+		break;
+	    found = 1;
 	} else {
 	    for (hl = highlights; hl->name; hl++) {
 		if (strpfx(hl->name, teststr)) {

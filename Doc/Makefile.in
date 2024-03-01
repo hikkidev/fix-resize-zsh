@@ -43,6 +43,7 @@ TEXI2DVI = @TEXI2DVI@
 DVIPS = dvips
 TEXI2PDF  = @TEXI2PDF@
 TEXI2HTML = @TEXI2HTML@
+SET_TEXI2ANY_VAR = @SET_TEXI2ANY_VAR@
 PAPERSIZE = @PAPERSIZE@
 
 .SUFFIXES: .yo .1
@@ -62,7 +63,8 @@ Zsh/mod_attr.yo Zsh/mod_cap.yo Zsh/mod_clone.yo \
 Zsh/mod_compctl.yo Zsh/mod_complete.yo Zsh/mod_complist.yo \
 Zsh/mod_computil.yo Zsh/mod_curses.yo \
 Zsh/mod_datetime.yo Zsh/mod_db_gdbm.yo Zsh/mod_deltochar.yo \
-Zsh/mod_example.yo Zsh/mod_files.yo Zsh/mod_langinfo.yo \
+Zsh/mod_example.yo Zsh/mod_files.yo \
+Zsh/mod_hlgroup.yo Zsh/mod_langinfo.yo \
 Zsh/mod_ksh93.yo Zsh/mod_mapfile.yo Zsh/mod_mathfunc.yo \
 Zsh/mod_nearcolor.yo Zsh/mod_newuser.yo \
 Zsh/mod_parameter.yo Zsh/mod_pcre.yo Zsh/mod_private.yo \
@@ -266,7 +268,7 @@ texi2html.conf: $(sdir_top)/Config/version.mk
 	d=`echo $(VERSION_DATE)`; \
 	v="<font size=\"-1\">Zsh version $(VERSION), released on $$d.</font>"; \
 	case '$(TEXI2HTML)' in \
-	  *texi2any*) echo "set_from_init_file('PRE_BODY_CLOSE','$$v');" ;; \
+	  *texi2any*) echo "$(SET_TEXI2ANY_VAR)('PRE_BODY_CLOSE','$$v');" ;; \
 	  *) echo "\$$PRE_BODY_CLOSE = '$$v';" ;; \
 	esac > $@
 

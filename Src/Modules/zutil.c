@@ -462,6 +462,28 @@ lookupstyle(char *ctxt, char *style)
 }
 
 static int
+testforstyle(char *ctxt, char *style)
+{
+    Style s;
+    Stypat p;
+    int found = 0;
+
+    s = (Style)zstyletab->getnode2(zstyletab, style);
+    if (s) {
+	MatchData match;
+	savematch(&match);
+	for (p = s->pats; p; p = p->next)
+	    if (pattry(p->prog, ctxt)) {
+		found = 1;
+		break;
+	    }
+	restorematch(&match);
+    }
+
+    return !found;	/* 0 == success */
+}
+
+static int
 bin_zstyle(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
 {
     int min, max, n, add = 0, list = ZSLIST_NONE, eval = 0;
@@ -570,6 +592,7 @@ bin_zstyle(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
     case 't': min = 2; max = -1; break;
     case 'T': min = 2; max = -1; break;
     case 'm': min = 3; max =  3; break;
+    case 'q': min = 2; max =  2; break;
     case 'g': min = 1; max =  3; break;
     default:
 	zwarnnam(nam, "invalid option: %s", args[0]);
@@ -721,6 +744,15 @@ bin_zstyle(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
 
 	    unqueue_signals();
 	    return 1;
+	}
+	break;
+    case 'q':
+	{
+	    int success;
+	    queue_signals();	/* Protect PAT_STATIC */
+	    success = testforstyle(args[1], args[2]);
+	    unqueue_signals();
+	    return success;
 	}
 	break;
     case 'g':
@@ -965,7 +997,7 @@ bin_zformat(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
     case 'a':
 	{
 	    char **ap, *cp;
-	    int nbc = 0, colon = 0, pre = 0, suf = 0;
+	    int nbc = 0, pre = 0, suf = 0;
 #ifdef MULTIBYTE_SUPPORT
 	    int prechars = 0;
 #endif /* MULTIBYTE_SUPPORT */
@@ -980,7 +1012,6 @@ bin_zformat(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
 		    int dchars = 0;
 #endif /* MULTIBYTE_SUPPORT */
 
-		    colon++;
 		    if ((d = cp - *ap - nbc) > pre)
 			pre = d;
 #ifdef MULTIBYTE_SUPPORT
@@ -1378,11 +1409,11 @@ rmatch(RParseResult *sm, char *subj, char *var1, char *var2, int comp)
 					     "zregexparse-guard"), !lastval))) {
 		LinkNode aln;
 		char **mend;
-		int len;
+		int len = 0;
 
 		queue_signals();
-		mend = getaparam("mend");
-		len = atoi(mend[0]);
+		if ((mend = getaparam("mend")))
+		    len = atoi(mend[0]);
 		unqueue_signals();
 
 		for (i = len; i; i--)

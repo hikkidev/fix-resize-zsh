@@ -27,7 +27,7 @@ _ssh () {
     '-r[recursively copy directories (follows symbolic links)]'
     '-S+[specify ssh program]:path to ssh:_command_names -e'
     '-v[verbose mode]'
-    '*(-O)-X+[specify sftp protocol option]: : _values "sftp option"
+    '(-O)*-X+[specify sftp protocol option]: : _values "sftp option"
       "nrequests[set max concurrent SFTP read or write requests]\:requests [64]"
       "buffer[set max buffer size for a single SFTP read/write operation]\: \:_numbers -l 0 -m 256K -d 32K -u bytes -f size \:B\:bytes \:K\:kilobytes"'
   )
@@ -57,7 +57,7 @@ _ssh () {
       "-N[don't execute a remote command]" \
       '-n[redirect stdin from /dev/null]' \
       '-O+[control an active connection multiplexing master process]:multiplex control command:((check\:"check master process is running" exit\:"request the master to exit" forward\:"request forward without command execution" stop\:"request the master to stop accepting further multiplexing requests" cancel\:"cancel existing forwardings with -L and/or -R" proxy))' \
-      '-P[use non privileged port]' \
+      '-P+[specify a tag name that may be used to select configuration]:tag' \
       '-p+[specify port on remote host]:port number on remote host' \
       '(-v)*-q[quiet operation]' \
       '*-R+[specify remote port forwarding]:remote port forwarding:->forward' \
@@ -136,7 +136,7 @@ _ssh () {
       '(-k -c)-s[force sh-style shell]' \
       '-t+[set default maximum lifetime for identities]: :_numbers -u seconds "maximum lifetime" \:s\:seconds m\:minutes h\:hours d\:days w\:weeks' \
       '-v[verbose mode]' \
-      '*::command: _normal'
+      '*::command: _normal -p $service'
     return
     ;;
   ssh-keygen)
@@ -738,7 +738,7 @@ _ssh () {
       local -a _comp_priv_prefix
       shift 1 words
       (( CURRENT-- ))
-      _normal
+      _normal -p $service
       return
       ;;
     destinations)

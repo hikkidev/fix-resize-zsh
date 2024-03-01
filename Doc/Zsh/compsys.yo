@@ -5227,6 +5227,57 @@ the group name.
 This function is called automatically from tt(_description)
 and hence is not normally called explicitly.
 )
+findex(_shadow)
+findex(_unshadow)
+xitem(tt(_shadow) [ tt(-s) var(suffix) ] [ -- ] var(command_name) ...)
+item(tt(_unshadow))(
+The tt(_shadow) function creates a copy of each of the shell functions
+in the var(command_name) arguments.  The original functions can then
+be replaced by new implementations.  A later call to tt(_unshadow)
+removes the new implementations, if any, and restores the originals.
+
+Recommended usage is to pair tt(_shadow) and tt(_unshadow) calls by
+use of an `tt(always)' block:
+example({
+  _shadow fname
+  function fname {
+    # Do your new thing
+  }
+  # Invoke callers of fname
+} always {
+  _unshadow
+})
+
+The var(suffix), if supplied, is prepended by an `tt(@)' character and
+then appended to each var(command_name) to create the copy.  Thus
+example(_shadow -s XX foo)
+creates a function named `tt(foo@XX)'.  This provides a well-known
+name for the original implementation if the new implementation needs
+to call it as a wrapper.  If a nested call to  tt(_shadow) uses the
+same var(suffix), em(no new copy is made).  The presumption thus is
+that suffixes and new implementations correspond one to one.
+
+If var(command_name) is a builtin or external command, and there has been
+no preceding tt(_shadow) replacement made, the function so created calls
+the shadowed name prefixed by the tt(builtin) or tt(command) keywords as
+appropriate.
+example({
+  _shadow -s wrap compadd
+  compadd LPAR()RPAR() {
+    # compadd@wrap runs builtin compadd
+    compadd@wrap -O tmparr "$@" }
+} always {
+  _unshadow
+})
+
+When no var(suffix) argument is present, tt(_shadow) creates a unique
+suffix to avoid name collisions.
+
+Arguments of tt(_unshadow) are ignored.  Every listed var(command_name)
+for the most recent call to tt(_shadow) is removed.  This differs from
+an early implementation that required tt(_unshadow) to receive the
+same var(suffix) and var(command_name) list as tt(_shadow).
+)
 findex(_store_cache)
 item(tt(_store_cache) var(cache_identifier) var(param) ...)(
 This function, together with tt(_retrieve_cache) and

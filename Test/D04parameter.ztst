@@ -2280,6 +2280,27 @@ F:We do not care what $OLDPWD is, as long as it does not cause an error
 F:As of this writing, var=$@ and var="$@" with null IFS have unspecified
 F:behavior, see http://austingroupbugs.net/view.php?id=888
 
+  (
+  IFS=$'\x80'
+  if [[ $IFS = $' \t\n\0' ]]; then
+    echo OK     # if $'\x80' is illegal (e.g. Linux)
+  else          # otherwise (e.g. macOS), it should work as a separator
+    s=$'foo\x80\bar'
+    [[ ${${=s}[1]} = foo ]] && echo OK
+  fi
+  )
+0D:reset IFS to default if it contains illegal character
+>OK
+
+  (
+  unsetopt multibyte
+  IFS=$'\xc3\xa9'
+  s=$'foo\xc3bar\xa9boo'
+  echo ${${=s}[2]}
+  )
+0:eight bit chars in IFS should work if multibute option is off
+>bar
+
   () {
     setopt localoptions extendedglob
     [[ $- = [[:alnum:]]## ]] || print Failed 1
@@ -2741,16 +2762,74 @@ F:behavior, see http://austingroupbugs.net/view.php?id=888
 
  slash='/'
  print -r -- x${slash/'/'}y
--Df:(users/28784) substituting a single-quoted backslash, part #1: slash
+0:(users/28784) substituting a single-quoted backslash, part #1: slash
 >xy
 
  single_quote="'"
- print -r -- x${single_quote/'/'}y
--Df:(users/28784) substituting a single-quoted backslash, part #2: single quote
->x/y
+ print -r -- x${single_quote/$'/'}y
+0:(users/28784) substituting a single-quoted backslash, part #2: single quote
+>x'y
 
  control="foobar"
  print -r -- x${control/'bar'}y
 0:(users/28784 inspired this) substituting a single-quoted backslash, part #3: control
 >xfooy
 
+ spacestring="string with spaces"
+ print ${spacestring:gs/[[:space:]]/ /}
+ print ${spacestring:g&}
+ print ${spacestring:gS/[[:space:]]//}
+ print ${spacestring:g&}
+0:Different behaviour of :s and :S modifiers
+>string with spaces
+>string with spaces
+>stringwithspaces
+>stringwithspaces
+
+  : ${(#X):-@}
+1:${(#X)...}: bad math expression
+?(eval):1: bad math expression: illegal character: @
+
+  echo a${(#):-@}z
+0:${(#)...}: bad math expression
+>az
+
+  printf "a%sz\n" ${(#):-@}
+0:${(#)...}: bad math expression, printf
+>az
+
+  a=( '1 +' '@' )
+  : ${(#X)a}
+1:${(#X)...}: array of bad math expressions
+?(eval):2: bad math expression: operand expected at end of string
+
+  printf "a%sz\n" ${(#)a}
+0:${(#)...}: array of bad math expressions, printf
+>az
+
+  if [[ ! -o multibyte ]]; then
+    ZTST_skip='(#X) accepts any byte if multibyte is off'
+  else
+    : ${(#X):-0x80}
+  fi
+1:${(#X)...}: out-of-range character
+?(eval):4: character not in range
+
+  [[ ${(#):-0x80} = $'\x80' ]] && echo OK
+0:${(#)...}: out-of-range character
+>OK
+
+  a=( 0x80 0x81 )
+  printf "%s\n" ${(#)a} |
+  while read x; do echo $(( #x )); done
+0:${(#)...}: array of out-of-range characters
+>128
+>129
+
+  if [[ ! -o multibyte ]]; then
+    ZTST_skip='(#X) accepts any byte if multibyte is off'
+  else
+    : ${(#X)a}
+  fi
+1:${(#X)...}: array of out-of-range characters
+?(eval):4: character not in range

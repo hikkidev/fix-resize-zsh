@@ -601,7 +601,7 @@ clear_hdocs(void)
  *			| sublist [ SEPER | AMPER | AMPERBANG ]
  *
  * cmdsubst indicates our event is part of a command-style
- * substitution terminated by the token indicationg, usual closing
+ * substitution terminated by the token indicated, usually closing
  * parenthesis.  In other cases endtok is ENDINPUT.
  */
 
@@ -1935,6 +1935,8 @@ par_simple(int *cmplx, int nr)
 
 		if (*ptr == Outbrace && ptr > tokstr + 1)
 		{
+		    /* Should we allow namespace FDs, {.foo.bar}>&file ? *
+		     * If so, change IIDENT to INAMESPC here             */
 		    if (itype_end(tokstr+1, IIDENT, 0) >= ptr)
 		    {
 			char *toksave = tokstr;
@@ -3217,12 +3219,14 @@ bin_zcompile(char *nam, char **args, Options ops, UNUSED(int func))
 
     if (!args[1] && !(OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a'))) {
 	queue_signals();
-	ret = build_dump(nam, dyncat(*args, FD_EXT), args, OPT_ISSET(ops,'U'),
+	dump = unmetafy(dyncat(*args, FD_EXT), NULL);
+	ret = build_dump(nam, dump, args, OPT_ISSET(ops,'U'),
 			 map, flags);
 	unqueue_signals();
 	return ret;
     }
-    dump = (strsfx(FD_EXT, *args) ? *args : dyncat(*args, FD_EXT));
+    dump = (strsfx(FD_EXT, *args) ? dupstring(*args) : dyncat(*args, FD_EXT));
+    unmetafy(dump, NULL);
 
     queue_signals();
     ret = ((OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a')) ?
@@ -3400,6 +3404,7 @@ build_dump(char *nam, char *dump, char **files, int ali, int map, int flags)
 
     for (hlen = FD_PRELEN, tlen = 0; *files; files++) {
 	struct stat st;
+	char *fnam;
 
 	if (check_cond(*files, "k")) {
 	    flags = (flags & ~(FDHF_KSHLOAD | FDHF_ZSHLOAD)) | FDHF_KSHLOAD;
@@ -3408,7 +3413,8 @@ build_dump(char *nam, char *dump, char **files, int ali, int map, int flags)
 	    flags = (flags & ~(FDHF_KSHLOAD | FDHF_ZSHLOAD)) | FDHF_ZSHLOAD;
 	    continue;
 	}
-	if ((fd = open(*files, O_RDONLY)) < 0 ||
+	fnam = unmeta(*files);
+	if ((fd = open(fnam, O_RDONLY)) < 0 ||
 	    fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
 	    (flen = lseek(fd, 0, 2)) == -1) {
 	    if (fd >= 0)

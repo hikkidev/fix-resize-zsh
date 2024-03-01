@@ -512,12 +512,13 @@ stringaszleline(char *instr, int incs, int *outll, int *outsz, int *outcs)
 	    *outcs = outptr - outstr;
 	*outll = outptr - outstr;
     } else {
+	*outstr = ZWC('\0');
 	*outll = 0;
 	if (outcs)
 	    *outcs = 0;
     }
 #else
-    memcpy(outstr, instr, ll);
+    strcpy(outstr, instr);
     *outll = ll;
     if (outcs)
 	*outcs = incs;
@@ -976,7 +977,7 @@ cuttext(ZLE_STRING_T line, int ct, int flags)
 	unmetafy(mbcut, &cutll);
 	mbcut = base64_encode(mbcut, cutll);
 
-	fprintf(shout, "\e]52;%c;%s\a", zmod.flags & MOD_CLIP ? 'c' : 'p',
+	fprintf(shout, "\033]52;%c;%s\a", zmod.flags & MOD_CLIP ? 'c' : 'p',
 		mbcut);
     } else if (zmod.flags & MOD_VIBUF) {
 	struct cutbuffer *b = &vibuf[zmod.vibuf];

@@ -438,7 +438,18 @@ fi],
 
 dnl Do you want to look for pcre support?
 AC_ARG_ENABLE(pcre,
-AS_HELP_STRING([--enable-pcre],[enable the search for the pcre library (may create run-time library dependencies)]))
+AS_HELP_STRING([--enable-pcre],[enable the search for the pcre2 library (may create run-time library dependencies)]))
+
+AC_ARG_VAR(PCRE_CONFIG, [pathname of pcre2-config if it is not in PATH])
+if test "x$enable_pcre" = xyes; then
+  AC_CHECK_PROG([PCRE_CONFIG], pcre2-config, pcre2-config)
+  if test "x$PCRE_CONFIG" = x; then
+    enable_pcre=no
+    AC_MSG_WARN([pcre2-config not found: pcre module is disabled.])
+    AC_MSG_NOTICE(
+      [Set PCRE_CONFIG to pathname of pcre2-config if it is not in PATH.])
+  fi
+fi
 
 dnl Do you want to look for capability support?
 AC_ARG_ENABLE(cap,
@@ -623,7 +634,12 @@ fi
 
 if test x"$TEXI2HTML" = xtexi2any; then
   TEXI2HTML='texi2any -c TEXI2HTML=1'
+  case `texi2any --version 2>/dev/null | sed -e 's/^.*) *//' -e 1q` in
+    [[1-6]].*) SET_TEXI2ANY_VAR=set_from_init_file ;;
+    *) SET_TEXI2ANY_VAR=texinfo_set_from_init_file ;;
+  esac
 fi
+AC_SUBST(SET_TEXI2ANY_VAR)
 
 case "$LC_PAPER" in
   ??_US*) PAPERSIZE=us ;;
@@ -650,16 +666,12 @@ AC_HEADER_DIRENT
 AC_HEADER_STAT
 AC_HEADER_SYS_WAIT
 
-oldcflags="$CFLAGS"
-if test x$enable_pcre = xyes; then
-AC_CHECK_PROG([PCRECONF], pcre-config, pcre-config)
-dnl Typically (meaning on this single RedHat 9 box in front of me)
-dnl pcre-config --cflags produces a -I output which needs to go into
+dnl pcre2-config --cflags may produce a -I output which needs to go into
 dnl CPPFLAGS else configure's preprocessor tests don't pick it up,
 dnl producing a warning.
-if test "x$ac_cv_prog_PCRECONF" = xpcre-config; then
-  CPPFLAGS="$CPPFLAGS `pcre-config --cflags`"
-fi
+if test "x$enable_pcre" = xyes; then
+  CPPFLAGS="`$PCRE_CONFIG --cflags` $CPPFLAGS"
+  AC_CHECK_HEADERS([pcre2.h],,,[#define PCRE2_CODE_UNIT_WIDTH 8])
 fi
 
 AC_CHECK_HEADERS(sys/time.h sys/times.h sys/select.h termcap.h termio.h \
@@ -668,7 +680,7 @@ AC_CHECK_HEADERS(sys/time.h sys/times.h sys/select.h termcap.h termio.h \
 		 locale.h errno.h stdio.h stdarg.h varargs.h stdlib.h \
 		 unistd.h sys/capability.h \
 		 utmp.h utmpx.h sys/types.h pwd.h grp.h poll.h sys/mman.h \
-		 netinet/in_systm.h pcre.h langinfo.h wchar.h stddef.h \
+		 netinet/in_systm.h langinfo.h wchar.h stddef.h \
 		 sys/stropts.h iconv.h ncurses.h ncursesw/ncurses.h \
 		 ncurses/ncurses.h)
 if test x$dynamic = xyes; then
@@ -945,12 +957,6 @@ if test "x$ac_found_iconv" = "xyes"; then
       [ac_cv_iconv_const=const])])
   AC_DEFINE_UNQUOTED([ICONV_CONST], $ac_cv_iconv_const,
     [Define as const if the declaration of iconv() needs const.])
-fi
-
-if test x$enable_pcre = xyes; then
-dnl pcre-config should probably be employed here
-dnl AC_SEARCH_LIBS(pcre_compile, pcre)
-  LIBS="`$ac_cv_prog_PCRECONF --libs` $LIBS"
 fi
 
 dnl ---------------------
@@ -1289,10 +1295,11 @@ AC_CHECK_FUNCS(strftime strptime mktime timelocal \
 	       select poll \
 	       readlink faccessx fchdir ftruncate \
 	       fstat lstat lchown fchown fchmod \
-	       fseeko ftello \
+	       fpurge fseeko ftello \
 	       mkfifo _mktemp mkstemp \
 	       waitpid wait3 \
 	       sigaction sigblock sighold sigrelse sigsetmask sigprocmask \
+	       sigqueue \
 	       killpg setpgid setpgrp tcsetpgrp tcgetattr nice \
 	       gethostname gethostbyname2 getipnodebyname \
 	       inet_aton inet_pton inet_ntop \
@@ -1313,7 +1320,6 @@ AC_CHECK_FUNCS(strftime strptime mktime timelocal \
 	       pathconf sysconf \
 	       tgetent tigetflag tigetnum tigetstr setupterm initscr resize_term \
 	       getcchar setcchar waddwstr wget_wch win_wch use_default_colors \
-	       pcre_compile pcre_study pcre_exec \
 	       nl_langinfo \
 	       erand48 open_memstream \
 	       posix_openpt \
@@ -1366,6 +1372,11 @@ return(!realpath("/", (char*)0));
 [zsh_cv_func_realpath_accepts_null=$ac_cv_func_canonicalize_file_name])])
 if test x$zsh_cv_func_realpath_accepts_null = xyes; then
   AC_DEFINE(REALPATH_ACCEPTS_NULL)
+fi
+
+if test x$enable_pcre = xyes; then
+  LIBS="`$PCRE_CONFIG --libs8` $LIBS"
+  AC_CHECK_FUNCS(pcre2_compile_8)
 fi
 
 if test x$enable_cap = xyes; then
@@ -1757,27 +1768,27 @@ if test x$zsh_cv_path_term_header != xnone; then
   fi
 
   AC_MSG_CHECKING(if boolcodes is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = boolcodes; puts(*test);]])],[AC_DEFINE(HAVE_BOOLCODES) boolcodes=yes],[boolcodes=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)boolcodes; puts(*test);]])],[AC_DEFINE(HAVE_BOOLCODES) boolcodes=yes],[boolcodes=no])
   AC_MSG_RESULT($boolcodes)
 
   AC_MSG_CHECKING(if numcodes is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = numcodes; puts(*test);]])],[AC_DEFINE(HAVE_NUMCODES) numcodes=yes],[numcodes=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)numcodes; puts(*test);]])],[AC_DEFINE(HAVE_NUMCODES) numcodes=yes],[numcodes=no])
   AC_MSG_RESULT($numcodes)
 
   AC_MSG_CHECKING(if strcodes is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = strcodes; puts(*test);]])],[AC_DEFINE(HAVE_STRCODES) strcodes=yes],[strcodes=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)strcodes; puts(*test);]])],[AC_DEFINE(HAVE_STRCODES) strcodes=yes],[strcodes=no])
   AC_MSG_RESULT($strcodes)
 
   AC_MSG_CHECKING(if boolnames is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = boolnames; puts(*test);]])],[AC_DEFINE(HAVE_BOOLNAMES) boolnames=yes],[boolnames=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)boolnames; puts(*test);]])],[AC_DEFINE(HAVE_BOOLNAMES) boolnames=yes],[boolnames=no])
   AC_MSG_RESULT($boolnames)
 
   AC_MSG_CHECKING(if numnames is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = numnames; puts(*test);]])],[AC_DEFINE(HAVE_NUMNAMES) numnames=yes],[numnames=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)numnames; puts(*test);]])],[AC_DEFINE(HAVE_NUMNAMES) numnames=yes],[numnames=no])
   AC_MSG_RESULT($numnames)
 
   AC_MSG_CHECKING(if strnames is available)
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = strnames; puts(*test);]])],[AC_DEFINE(HAVE_STRNAMES) strnames=yes],[strnames=no])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[$term_includes]], [[char **test = (char **)strnames; puts(*test);]])],[AC_DEFINE(HAVE_STRNAMES) strnames=yes],[strnames=no])
   AC_MSG_RESULT($strnames)
 
   dnl There are apparently defective terminal library headers on some
@@ -1965,6 +1976,15 @@ if test x$ac_cv_func_getrusage = xyes; then
 #endif
 #include <sys/resource.h>])
 fi
+dnl On some OSes (only macOS?) ru_maxrss is in bytes (not in kilobytes).
+dnl Solaris uses pages as the unit, but ru_maxrss is set to zero anyway.
+AH_TEMPLATE(RU_MAXRSS_IS_IN_BYTES,
+[Define to 1 if ru_maxrss in struct rusage is in bytes.])
+case "$host_os" in
+  darwin*)
+    AC_DEFINE(RU_MAXRSS_IS_IN_BYTES)
+  ;;
+esac
 
 
 dnl --------------------------------------------
@@ -1996,10 +2016,29 @@ AH_TEMPLATE([PATH_DEV_FD],
 [Define to the path of the /dev/fd filesystem.])
 AC_CACHE_CHECK(for /dev/fd filesystem, zsh_cv_sys_path_dev_fd,
 [for zsh_cv_sys_path_dev_fd in /proc/self/fd /dev/fd no; do
-   test x`echo ok|(exec 3<&0; cat $zsh_cv_sys_path_dev_fd/3 2>/dev/null;)` = xok && break
+   (exec 3<&0; test -e $zsh_cv_sys_path_dev_fd/3;) && break
  done])
 if test x$zsh_cv_sys_path_dev_fd != xno; then
   AC_DEFINE_UNQUOTED(PATH_DEV_FD, "$zsh_cv_sys_path_dev_fd")
+fi
+
+dnl ----------------------------------------------------
+dnl CHECK FOR SYMLINK TO THE CURRENT EXECUTABLE IN /proc
+dnl ----------------------------------------------------
+dnl Linux: /proc/self/exe
+dnl NetBSD: /proc/curproc/exe (or /proc/self/exe, but not /proc/curproc/file)
+dnl DragonFly: /proc/curproc/file
+dnl Solaris: /proc/self/path/a.out
+AH_TEMPLATE([PROC_SELF_EXE],
+[Define to the path of the symlink to the current executable file.])
+AC_CACHE_CHECK(for symlink to the current executable in /proc,
+zsh_cv_proc_self_exe,
+[for zsh_cv_proc_self_exe in /proc/self/exe /proc/curproc/exe \
+                             /proc/curproc/file /proc/self/path/a.out no; do
+   test -L $zsh_cv_proc_self_exe && break
+done])
+if test x$zsh_cv_proc_self_exe != xno; then
+  AC_DEFINE_UNQUOTED(PROC_SELF_EXE, "$zsh_cv_proc_self_exe")
 fi
 
 dnl ---------------------------------

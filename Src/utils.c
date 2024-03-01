@@ -74,9 +74,6 @@ set_widearray(char *mb_array, Widechar_array wca)
     }
     wca->len = 0;
 
-    if (!isset(MULTIBYTE))
-	return;
-
     if (mb_array) {
 	VARARR(wchar_t, tmpwcs, strlen(mb_array));
 	wchar_t *wcptr = tmpwcs;
@@ -87,8 +84,7 @@ set_widearray(char *mb_array, Widechar_array wca)
 	    int mblen;
 
 	    if ((unsigned char) *mb_array <= 0x7f) {
-		mb_array++;
-		*wcptr++ = (wchar_t)*mb_array;
+		*wcptr++ = (wchar_t)*mb_array++;
 		continue;
 	    }
 
@@ -380,11 +376,13 @@ zerrmsg(FILE *file, const char *fmt, va_list ap)
     fflush(file);
 }
 
+#ifdef HAVE_SETUPTERM
 /*
  * Wrapper for setupterm() and del_curterm().
  * These are called from terminfo.c and termcap.c.
  */
 static int term_count;	/* reference count of cur_term */
+#endif
 
 /**/
 mod_export void
@@ -1071,7 +1069,7 @@ get_username(void)
 	cached_uid = current_uid;
 	zsfree(cached_username);
 	if ((pswd = getpwuid(current_uid)))
-	    cached_username = ztrdup(pswd->pw_name);
+	    cached_username = ztrdup_metafy(pswd->pw_name);
 	else
 	    cached_username = ztrdup("");
     }
@@ -1733,6 +1731,13 @@ freestr(void *a)
 mod_export void
 gettyinfo(struct ttyinfo *ti)
 {
+    fdgettyinfo(SHTTY, ti);
+}
+
+/**/
+mod_export void
+fdgettyinfo(int SHTTY, struct ttyinfo *ti)
+{
     if (SHTTY != -1) {
 #ifdef HAVE_TERMIOS_H
 # ifdef HAVE_TCGETATTR
@@ -1757,6 +1762,13 @@ gettyinfo(struct ttyinfo *ti)
 /**/
 mod_export void
 settyinfo(struct ttyinfo *ti)
+{
+    fdsettyinfo(SHTTY, ti);
+}
+
+/**/
+mod_export void
+fdsettyinfo(int SHTTY, struct ttyinfo *ti)
 {
     if (SHTTY != -1) {
 #ifdef HAVE_TERMIOS_H
@@ -2014,6 +2026,28 @@ mod_export int
 redup(int x, int y)
 {
     int ret = y;
+
+#ifdef HAVE_FPURGE
+    /* Make sure buffers are cleared when changing descriptor for a
+     * FILE object.  No fflush() here because the only way anything
+     * can legitimately be left in the buffer is when an error has
+     * occurred, so attempting flush here would at best error again
+     * and at worst squirt out something unexpected.
+     */
+    if (stdout && y == fileno(stdout))
+	fpurge(stdout);
+    if (stderr && y == fileno(stderr))
+	fpurge(stderr);
+    if (shout && y == fileno(shout))
+	fpurge(shout);
+    if (xtrerr && y == fileno(xtrerr))
+	fpurge(xtrerr);
+#ifndef _IONBF
+    /* See init.c setupshin() -- stdin otherwise unbuffered */
+    if (stdin && y == fileno(stdin))
+	fpurge(stdin);
+#endif
+#endif
 
     if(x < 0)
 	zclose(y);
@@ -4138,8 +4172,9 @@ inittyptab(void)
      * having IIDENT here is a good idea at all, but this code
      * should disappear into history...
      */
-    for (t0 = 0240; t0 != 0400; t0++)
-	typtab[t0] = IALPHA | IALNUM | IIDENT | IUSER | IWORD;
+    if isset(MULTIBYTE)
+	for (t0 = 0240; t0 != 0400; t0++)
+	    typtab[t0] = IALPHA | IALNUM | IIDENT | IUSER | IWORD;
 #endif
     /* typtab['.'] |= IIDENT; */ /* Allow '.' in variable names - broken */
     typtab['_'] = IIDENT | IUSER;
@@ -4154,11 +4189,24 @@ inittyptab(void)
 	typtab[t0] |= ITOK | IMETA;
     for (t0 = (int) (unsigned char) Snull; t0 <= (int) (unsigned char) Nularg; t0++)
 	typtab[t0] |= ITOK | IMETA | INULL;
-    for (s = ifs ? ifs : EMULATION(EMULATE_KSH|EMULATE_SH) ?
-	DEFAULT_IFS_SH : DEFAULT_IFS; *s; s++) {
+     /* ifs */
+#define CURRENT_DEFAULT_IFS (EMULATION(EMULATE_KSH|EMULATE_SH) ? \
+			    DEFAULT_IFS_SH : DEFAULT_IFS)
+#ifdef MULTIBYTE_SUPPORT
+    if (isset(MULTIBYTE)) {
+	set_widearray(ifs ? ifs : CURRENT_DEFAULT_IFS, &ifs_wide);
+	if (ifs && !ifs_wide.chars) {
+	    zwarn("IFS has an invalid character; resetting IFS to default");
+	    zsfree(ifs);
+	    ifs = ztrdup(CURRENT_DEFAULT_IFS);
+	    set_widearray(ifs, &ifs_wide);
+	}
+    }
+#endif
+     for (s = ifs ? ifs : CURRENT_DEFAULT_IFS; *s; s++) {
 	int c = (unsigned char) (*s == Meta ? *++s ^ 32 : *s);
 #ifdef MULTIBYTE_SUPPORT
-	if (!isascii(c)) {
+	if (isset(MULTIBYTE) && !isascii(c)) {
 	    /* see comment for wordchars below */
 	    continue;
 	}
@@ -4171,10 +4219,15 @@ inittyptab(void)
 	}
 	typtab[c] |= ISEP;
     }
+    /* wordchars */
+#ifdef MULTIBYTE_SUPPORT
+    if (isset(MULTIBYTE))
+	set_widearray(wordchars, &wordchars_wide);
+#endif
     for (s = wordchars ? wordchars : DEFAULT_WORDCHARS; *s; s++) {
 	int c = (unsigned char) (*s == Meta ? *++s ^ 32 : *s);
 #ifdef MULTIBYTE_SUPPORT
-	if (!isascii(c)) {
+	if (isset(MULTIBYTE) && !isascii(c)) {
 	    /*
 	     * If we have support for multibyte characters, we don't
 	     * handle non-ASCII characters here; instead, we turn
@@ -4187,11 +4240,6 @@ inittyptab(void)
 #endif
 	typtab[c] |= IWORD;
     }
-#ifdef MULTIBYTE_SUPPORT
-    set_widearray(wordchars, &wordchars_wide);
-    set_widearray(ifs ? ifs : EMULATION(EMULATE_KSH|EMULATE_SH) ?
-	DEFAULT_IFS_SH : DEFAULT_IFS, &ifs_wide);
-#endif
     for (s = SPECCHARS; *s; s++)
 	typtab[(unsigned char) *s] |= ISPECIAL;
     if (typtab_flags & ZTF_SP_COMMA)
@@ -6679,11 +6727,14 @@ dquotedzputs(char const *s, FILE *stream)
 # if defined(HAVE_NL_LANGINFO) && defined(CODESET) && !defined(__STDC_ISO_10646__)
 /* Convert a character from UCS4 encoding to UTF-8 */
 
-static size_t
+static int
 ucs4toutf8(char *dest, unsigned int wval)
 {
-    size_t len;
+    int len;
 
+    /* UCS4 is now equvalent to UTF-32 and limited to 0 - 0x10_FFFF.
+     * This function accepts 0 - 0x7FFF_FFFF (old range of UCS4) to be
+     * compatible with wctomb(3) (in UTF-8 locale) on Linux. */
     if (wval < 0x80)
       len = 1;
     else if (wval < 0x800)
@@ -6694,8 +6745,12 @@ ucs4toutf8(char *dest, unsigned int wval)
       len = 4;
     else if (wval < 0x4000000)
       len = 5;
-    else
+    else if (wval < 0x80000000)
       len = 6;
+    else {
+      zerr("character not in range");
+      return -1;
+    }
 
     switch (len) { /* falls through except to the last case */
     case 6: dest[5] = (wval & 0x3f) | 0x80; wval >>= 6;
@@ -6712,30 +6767,89 @@ ucs4toutf8(char *dest, unsigned int wval)
 }
 #endif
 
+/* Convert UCS4 to a multibyte character in current locale.
+ * Result is saved in buf (must be at least MB_CUR_MAX bytes long).
+ * Returns the number of bytes saved in buf, or -1 if conversion fails. */
 
-/*
- * The following only occurs once or twice in the code, but in different
- * places depending how character set conversion is implemented.
- */
-#define CHARSET_FAILED()		      \
-    if (how & GETKEY_DOLLAR_QUOTE) {	      \
-	while ((*tdest++ = *++s)) {	      \
-	    if (how & GETKEY_UPDATE_OFFSET) { \
-		if (s - sstart > *misc)	      \
-		    (*misc)++;		      \
-	    }				      \
-	    if (*s == Snull) {		      \
-		*len = (s - sstart) + 1;      \
-		*tdest = '\0';		      \
-		return buf;		      \
-	    }				      \
-	}				      \
-	*len = tdest - buf;		      \
-	return buf;			      \
-    }					      \
-    *t = '\0';				      \
-    *len = t - buf;			      \
-    return buf
+/**/
+int
+ucs4tomb(unsigned int wval, char *buf)
+{
+#if defined(HAVE_WCHAR_H) && defined(HAVE_WCTOMB) && defined(__STDC_ISO_10646__)
+    int count = wctomb(buf, (wchar_t)wval);
+    if (count == -1)
+	zerr("character not in range");
+    return count;
+#else	/* !(HAVE_WCHAR_H && HAVE_WCTOMB && __STDC_ISO_10646__) */
+# if defined(HAVE_NL_LANGINFO) && defined(CODESET)
+    if (!strcmp(nl_langinfo(CODESET), "UTF-8")) {
+	return ucs4toutf8(buf, wval);
+    } else {
+#   ifdef HAVE_ICONV
+	iconv_t cd;
+	char inbuf[4], *bsave = buf;
+	ICONV_CONST char *inptr = inbuf;
+	size_t inbytes = 4, outbytes = 6;
+	const char *codesetstr = nl_langinfo(CODESET);
+	size_t count;
+	int i;
+
+	/*
+	 * If the code set isn't handled, we'd better assume it's US-ASCII
+	 * rather than just failing hopelessly.  Solaris has a weird habit
+	 * of returning 646.  This is handled by the native iconv(), but
+	 * not by GNU iconv; what's more, some versions of the native iconv
+	 * don't handle standard names like ASCII.
+	 *
+	 * This should only be a problem if there's a mismatch between the
+	 * NLS and the iconv in use, which probably only means if libiconv
+	 * is in use.  We checked at configure time if our libraries pulled
+	 * in _libiconv_version, which should be a good test.
+	 *
+	 * It shouldn't ever be NULL, but while we're being paranoid...
+	 */
+#     ifdef ICONV_FROM_LIBICONV
+	if (!codesetstr || !*codesetstr)
+	    codesetstr = "US-ASCII";
+#     endif
+	cd = iconv_open(codesetstr, "UCS-4BE");
+#     ifdef ICONV_FROM_LIBICONV
+	if (cd == (iconv_t)-1 &&  !strcmp(codesetstr, "646")) {
+	    codesetstr = "US-ASCII";
+	    cd = iconv_open(codesetstr, "UCS-4BE");
+	}
+#     endif
+	if (cd == (iconv_t)-1) {
+	    zerr("cannot do charset conversion (iconv failed)");
+	    return -1;
+	}
+
+	/* store value in big endian form */
+	for (i=3; i>=0; i--) {
+	    inbuf[i] = wval & 0xff;
+	    wval >>= 8;
+	}
+	count = iconv(cd, &inptr, &inbytes, &buf, &outbytes);
+	iconv_close(cd);
+	if (count) {
+	    /* -1 indicates error. Positive value means number of "invalid"
+	     * (or "non-reversible") conversions, which we consider as
+	     * "out-of-range" characters. */
+	    zerr("character not in range");
+	    return -1;
+	}
+	return buf - bsave;
+#   else    /* !HAVE_ICONV */
+	zerr("cannot do charset conversion (iconv not available)");
+	return -1;
+#   endif   /* HAVE_ICONV */
+    }
+# else	/* !(HAVE_NL_LANGINFO && CODESET) */
+    zerr("cannot do charset conversion (NLS not supported)");
+    return -1;
+# endif	/* HAVE_NL_LANGINFO && CODESET */
+#endif	/* HAVE_WCHAR_H && HAVE_WCTOMB && __STDC_ISO_10646__ */
+}
 
 /*
  * Decode a key string, turning it into the literal characters.
@@ -6792,21 +6906,6 @@ getkeystring(char *s, int *len, int how, int *misc)
     char *t, *tdest = NULL, *u = NULL, *sstart = s, *tbuf = NULL;
     char svchar = '\0';
     int meta = 0, control = 0, ignoring = 0;
-    int i;
-#if defined(HAVE_WCHAR_H) && defined(HAVE_WCTOMB) && defined(__STDC_ISO_10646__)
-    wint_t wval;
-    int count;
-#else
-    unsigned int wval;
-# if defined(HAVE_NL_LANGINFO) && defined(CODESET)
-#  if defined(HAVE_ICONV)
-    iconv_t cd;
-    char inbuf[4];
-    size_t inbytes, outbytes;
-#  endif
-    size_t count;
-# endif
-#endif
 
     DPUTS((how & GETKEY_UPDATE_OFFSET) &&
 	  (how & ~(GETKEYS_DOLLARS_QUOTE|GETKEY_UPDATE_OFFSET)),
@@ -6871,7 +6970,8 @@ getkeystring(char *s, int *len, int how, int *misc)
     }
     for (; *s; s++) {
 	if (*s == '\\' && s[1]) {
-	    int miscadded;
+	    int miscadded, count, i;
+	    unsigned int wval;
 	    if ((how & GETKEY_UPDATE_OFFSET) && s - sstart < *misc) {
 		(*misc)--;
 		miscadded = 1;
@@ -6986,86 +7086,32 @@ getkeystring(char *s, int *len, int how, int *misc)
 		    *misc = wval;
 		    return s+1;
 		}
-#if defined(HAVE_WCHAR_H) && defined(HAVE_WCTOMB) && defined(__STDC_ISO_10646__)
-		count = wctomb(t, (wchar_t)wval);
+		count = ucs4tomb(wval, t);
 		if (count == -1) {
-		    zerr("character not in range");
-		    CHARSET_FAILED();
+		    if (how & GETKEY_DOLLAR_QUOTE) {
+			while ((*tdest++ = *++s)) {
+			    if (how & GETKEY_UPDATE_OFFSET) {
+				if (s - sstart > *misc)
+				    (*misc)++;
+			    }
+			    if (*s == Snull) {
+				*len = (s - sstart) + 1;
+				*tdest = '\0';
+				return buf;
+			    }
+			}
+			*len = tdest - buf;
+		    }
+		    else {
+			*t = '\0';
+			*len = t - buf;
+		    }
+		    return buf;
 		}
 		if ((how & GETKEY_UPDATE_OFFSET) && s - sstart < *misc)
 		    (*misc) += count;
 		t += count;
-# else
-#  if defined(HAVE_NL_LANGINFO) && defined(CODESET)
-		if (!strcmp(nl_langinfo(CODESET), "UTF-8")) {
-		    count = ucs4toutf8(t, wval);
-		    t += count;
-		    if ((how & GETKEY_UPDATE_OFFSET) && s - sstart < *misc)
-			(*misc) += count;
-		} else {
-#   ifdef HAVE_ICONV
-		    ICONV_CONST char *inptr = inbuf;
-		    const char *codesetstr = nl_langinfo(CODESET);
-    	    	    inbytes = 4;
-		    outbytes = 6;
-		    /* store value in big endian form */
-		    for (i=3;i>=0;i--) {
-			inbuf[i] = wval & 0xff;
-			wval >>= 8;
-		    }
 
-		    /*
-		     * If the code set isn't handled, we'd better
-		     * assume it's US-ASCII rather than just failing
-		     * hopelessly.  Solaris has a weird habit of
-		     * returning 646.  This is handled by the
-		     * native iconv(), but not by GNU iconv; what's
-		     * more, some versions of the native iconv don't
-		     * handle standard names like ASCII.
-		     *
-		     * This should only be a problem if there's a
-		     * mismatch between the NLS and the iconv in use,
-		     * which probably only means if libiconv is in use.
-		     * We checked at configure time if our libraries
-		     * pulled in _libiconv_version, which should be
-		     * a good test.
-		     *
-		     * It shouldn't ever be NULL, but while we're
-		     * being paranoid...
-		     */
-#ifdef ICONV_FROM_LIBICONV
-		    if (!codesetstr || !*codesetstr)
-			codesetstr = "US-ASCII";
-#endif
-    	    	    cd = iconv_open(codesetstr, "UCS-4BE");
-#ifdef ICONV_FROM_LIBICONV
-		    if (cd == (iconv_t)-1 &&  !strcmp(codesetstr, "646")) {
-			codesetstr = "US-ASCII";
-			cd = iconv_open(codesetstr, "UCS-4BE");
-		    }
-#endif
-		    if (cd == (iconv_t)-1) {
-			zerr("cannot do charset conversion (iconv failed)");
-			CHARSET_FAILED();
-		    }
-                    count = iconv(cd, &inptr, &inbytes, &t, &outbytes);
-		    iconv_close(cd);
-		    if (count == (size_t)-1) {
-                        zerr("character not in range");
-			CHARSET_FAILED();
-		    }
-		    if ((how & GETKEY_UPDATE_OFFSET) && s - sstart < *misc)
-			(*misc) += count;
-#   else
-                    zerr("cannot do charset conversion (iconv not available)");
-		    CHARSET_FAILED();
-#   endif
-		}
-#  else
-                zerr("cannot do charset conversion (NLS not supported)");
-		CHARSET_FAILED();
-#  endif
-# endif
 		if (how & GETKEY_DOLLAR_QUOTE) {
 		    char *t2;
 		    for (t2 = tbuf; t2 < t; t2++) {
@@ -7532,8 +7578,8 @@ restoredir(struct dirsav *d)
     else if (d->level < 0)
 	err = -1;
     if (d->dev || d->ino) {
-	stat(".", &sbuf);
-	if (sbuf.st_ino != d->ino || sbuf.st_dev != d->dev)
+	if (stat(".", &sbuf) < 0 ||
+	    sbuf.st_ino != d->ino || sbuf.st_dev != d->dev)
 	    err = -2;
     }
     return err;
@@ -7558,9 +7604,9 @@ privasserted(void)
 	    /* POSIX doesn't define a way to test whether a capability set *
 	     * is empty or not.  Typical.  I hope this is conforming...    */
 	    cap_flag_value_t val;
-	    cap_value_t n;
-	    for(n = 0; !cap_get_flag(caps, n, CAP_EFFECTIVE, &val); n++)
-		if(val) {
+	    cap_value_t cap;
+	    for(cap = 0; !cap_get_flag(caps, cap, CAP_EFFECTIVE, &val); cap++)
+		if(val && cap != CAP_WAKE_ALARM) {
 		    cap_free(caps);
 		    return 1;
 		}

@@ -546,7 +546,7 @@ getparamnode(HashTable ht, const char *nam)
 	}
     }
 
-    if (hn && ht == realparamtab)
+    if (hn && ht == realparamtab && !(hn->flags & PM_UNSET))
 	hn = resolve_nameref((Param)hn, NULL);
     return hn;
 }
@@ -850,12 +850,11 @@ createparamtable(void)
     setsparam("HOST", ztrdup_metafy(hostnam));
     zfree(hostnam, 256);
 
-    setsparam("LOGNAME", ztrdup_metafy(
+    setsparam("LOGNAME",
 #ifndef DISABLE_DYNAMIC_NSS
-			(str = getlogin()) && *str ?  str :
+	      (str = getlogin()) && *str ? ztrdup_metafy(str) :
 #endif
-				cached_username
-			));
+	      ztrdup(cached_username));
 
 #if !defined(HAVE_PUTENV) && !defined(USE_SET_UNSET_ENV)
     /* Copy the environment variables we are inheriting to dynamic *
@@ -947,8 +946,18 @@ createparamtable(void)
     setsparam("ZSH_ARGZERO", ztrdup(posixzero));
     setsparam("ZSH_VERSION", ztrdup_metafy(ZSH_VERSION));
     setsparam("ZSH_PATCHLEVEL", ztrdup_metafy(ZSH_PATCHLEVEL));
-    setaparam("signals", sigptr = zalloc((SIGCOUNT+4) * sizeof(char *)));
-    for (t = sigs; (*sigptr++ = ztrdup_metafy(*t++)); );
+    setaparam("signals", sigptr = zalloc((TRAPCOUNT + 1) * sizeof(char *)));
+    t = sigs;
+#if defined(SIGRTMIN) && defined(SIGRTMAX)
+    while (t - sigs <= SIGCOUNT)
+	*sigptr++ = ztrdup_metafy(*t++);
+    {
+	int sig;
+	for (sig = SIGRTMIN; sig <= SIGRTMAX; sig++)
+	    *sigptr++ = ztrdup_metafy(rtsigname(sig, 0));
+    }
+#endif
+    while ((*sigptr++ = ztrdup_metafy(*t++))) /* empty */ ;
 
     noerrs = 0;
 }
@@ -1005,8 +1014,29 @@ createparam(char *name, int flags)
 			 gethashnode2(paramtab, name) :
 			 paramtab->getnode(paramtab, name));
 
-	if (oldpm && (oldpm->node.flags & PM_NAMEREF) &&
-	    !(flags & PM_NAMEREF) && (oldpm = upscope(oldpm, oldpm->base))) {
+	if (oldpm && (oldpm->node.flags & PM_RO_BY_DESIGN)) {
+	    if (!(flags & PM_LOCAL)) {
+		/* Must call the API for namerefs and specials to work */
+		pm = (Param) paramtab->getnode2(paramtab, oldpm->node.nam);
+		if (!pm || ((pm->node.flags & PM_NAMEREF) &&
+			    pm->level != locallevel)) {
+		    zerr("%s: can't modify read-only parameter", name);
+		    return NULL;
+		}
+	    }
+	    /**
+	     * Implementation note: In the case of a readonly nameref,
+	     * the right thing might be to insert a new global into
+	     * the paramtab and point the local pm->old at it, rather
+	     * than error.  That is why gethashnode2() is called
+	     * first, to avoid skipping up the stack prematurely.
+	     **/
+	}
+
+	if (oldpm && !(flags & PM_NAMEREF) &&
+	    (!(oldpm->node.flags & PM_RO_BY_DESIGN) || !(flags & PM_LOCAL)) &&
+	    (oldpm->node.flags & PM_NAMEREF) &&
+	    (oldpm = upscope(oldpm, oldpm->base))) {
 	    Param lastpm;
 	    struct asgment stop;
 	    stop.flags = PM_NAMEREF | (flags & PM_LOCAL);
@@ -1050,7 +1080,7 @@ createparam(char *name, int flags)
 		/* POSIXBUILTINS horror: we need to retain 'export' flags */
 		(isset(POSIXBUILTINS) && (oldpm->node.flags & PM_EXPORTED))) {
 		if (oldpm->node.flags & PM_RO_BY_DESIGN) {
-		    zerr("%s: can't change parameter attribute",
+		    zerr("%s: can't modify read-only parameter",
 			 name);
 		    return NULL;
 		}
@@ -1225,6 +1255,26 @@ isident(char *s)
 
     if (!*s)			/* empty string is definitely not valid */
 	return 0;
+
+    /* This partly duplicates code in itype_end(), but we need to
+     * distinguish the leading namespace at this point to check the
+     * correctness of the identifier that follows
+     */
+    if (*s == '.') {
+	if (idigit(s[1]))
+	    return 0;	/* Namespace must not start with a digit */
+	/* Reject identifiers beginning with a digit in namespaces.
+	 * Move this out below this block to also reject v.1x form.
+	 */
+	if ((ss = itype_end(s + (*s == '.'), IIDENT, 0))) {
+	    if (*ss == '.') {
+		if (!ss[1])
+		    return 0;
+		if (idigit(ss[1]))
+		    s = ss + 1;
+	    }
+	}
+    }
 
     if (idigit(*s)) {
 	/* If the first character is `s' is a digit, then all must be */
@@ -2148,7 +2198,12 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
 	    pm = (Param) paramtab->getnode2(paramtab, *t == '0' ? "0" : t);
 	else
 	    pm = (Param) paramtab->getnode(paramtab, *t == '0' ? "0" : t);
-	if (sav)
+	if (!pm && *t == '.' && !isident(t)) {
+	    /* badly formed namespace reference */
+	    if (sav)
+		*s = sav;
+	    return NULL;
+	} else if (sav)
 	    *s = sav;
 	*pptr = s;
 	if (!pm || ((pm->node.flags & PM_UNSET) &&
@@ -3300,7 +3355,7 @@ assignaparam(char *s, char **val, int flags)
 	} else if (!(PM_TYPE(v->pm->node.flags) & (PM_ARRAY|PM_HASHED)) &&
 		 !(v->pm->node.flags & (PM_SPECIAL|PM_TIED))) {
 	    int uniq = v->pm->node.flags & PM_UNIQUE;
-	    if (flags & ASSPM_AUGMENT) {
+	    if ((flags & ASSPM_AUGMENT) && !(v->pm->node.flags & PM_UNSET)) {
 	    	/* insert old value at the beginning of the val array */
 		char **new;
 		int lv = arrlen(val);
@@ -3591,9 +3646,18 @@ assignnparam(char *s, mnumber val, int flags)
 	pm = createparam(t, ss ? PM_ARRAY :
 			 isset(POSIXIDENTIFIERS) ? PM_SCALAR :
 			 (val.type & MN_INTEGER) ? PM_INTEGER : PM_FFLOAT);
-	if (!pm)
-	    pm = (Param) paramtab->getnode(paramtab, t);
-	DPUTS(!pm, "BUG: parameter not created");
+	if (errflag) {
+	    /* assume error message already output */
+	    unqueue_signals();
+	    return NULL;
+	}
+	if (!pm && !(pm = (Param) paramtab->getnode(paramtab, t))) {
+	    DPUTS(!pm, "BUG: parameter not created");
+	    if (!errflag)
+		zerr("%s: parameter not found", t);
+	    unqueue_signals();
+	    return NULL;
+	}
 	if (ss) {
 	    *ss = '[';
 	} else if (val.type & MN_INTEGER) {
@@ -3704,7 +3768,9 @@ unsetparam_pm(Param pm, int altflag, int exp)
     char *altremove;
 
     if ((pm->node.flags & PM_READONLY) && pm->level <= locallevel) {
-	zerr("read-only variable: %s", pm->node.nam);
+	zerr("read-only %s: %s",
+	     (pm->node.flags & PM_NAMEREF) ? "reference" : "variable",
+	     pm->node.nam);
 	return 1;
     }
     if ((pm->node.flags & PM_RESTRICTED) && isset(RESTRICTED)) {
@@ -4534,7 +4600,7 @@ usernamesetfn(UNUSED(Param pm), char *x)
 	    zwarn("failed to change user ID: %e", errno);
 	else {
 	    zsfree(cached_username);
-	    cached_username = ztrdup(pswd->pw_name);
+	    cached_username = ztrdup_metafy(pswd->pw_name);
 	    cached_uid = pswd->pw_uid;
 	}
     }
@@ -4723,6 +4789,7 @@ setlang(char *x)
 	if ((x = getsparam_u(ln->name)) && *x)
 	    setlocale(ln->category, x);
     unqueue_signals();
+    inittyptab();
 }
 
 /**/
@@ -4746,6 +4813,7 @@ lc_allsetfn(Param pm, char *x)
     else {
 	setlocale(LC_ALL, unmeta(x));
 	clear_mbstate();
+	inittyptab();
     }
 }
 
@@ -4784,6 +4852,7 @@ lcsetfn(Param pm, char *x)
     }
     unqueue_signals();
     clear_mbstate();	/* LC_CTYPE may have changed */
+    inittyptab();
 }
 #endif /* USE_LOCALE */
 
@@ -5858,6 +5927,7 @@ static const struct paramtypes pmtypes[] = {
     { PM_ARRAY, "array", 'a', 0},
     { PM_HASHED, "association", 'A', 0},
     { 0, "local", 0, PMTF_TEST_LEVEL},
+    { PM_HIDE, "hide", 'h', 0 },
     { PM_LEFT, "left justified", 'L', PMTF_USE_WIDTH},
     { PM_RIGHT_B, "right justified", 'R', PMTF_USE_WIDTH},
     { PM_RIGHT_Z, "zero filled", 'Z', PMTF_USE_WIDTH},
@@ -5987,12 +6057,20 @@ printparamnode(HashNode hn, int printflags)
 	printflags |= PRINT_NAMEONLY;
 
     if (printflags & (PRINT_TYPESET|PRINT_POSIX_READONLY|PRINT_POSIX_EXPORT)) {
-	if (p->node.flags & (PM_RO_BY_DESIGN|PM_AUTOLOAD)) {
+	if (p->node.flags & PM_AUTOLOAD) {
 	    /*
 	     * It's not possible to restore the state of
 	     * these, so don't output.
 	     */
 	    return;
+	}
+	if (p->node.flags & PM_RO_BY_DESIGN) {
+	    /*
+	     * Compromise: cannot be restored out of context,
+	     * but show anyway if printed in scope of declaration
+	     */
+	    if (p->level != locallevel || p->level == 0)
+		return;
 	}
 	/*
 	 * The zsh variants of export -p/readonly -p also report other
@@ -6026,8 +6104,19 @@ printparamnode(HashNode hn, int printflags)
 	for (pmptr = pmtypes, i = 0; i < PMTYPES_SIZE; i++, pmptr++) {
 	    int doprint = 0;
 	    if (pmptr->flags & PMTF_TEST_LEVEL) {
-		if (p->level)
+		if (p->level) {
+		    /*
+		    if ((p->node.flags & PM_SPECIAL) &&
+			(p->node.flags & PM_LOCAL) &&
+			!(p->node.flags & PM_HIDE)) {
+			if (doneminus)
+			    putchar(' ');
+			printf("+h ");
+			doneminus = 0;
+		    }
+		    */
 		    doprint = 1;
+		}
 	    } else if ((pmptr->binflag != PM_EXPORTED || p->level ||
 			(p->node.flags & (PM_LOCAL|PM_ARRAY|PM_HASHED))) &&
 		       (p->node.flags & pmptr->binflag))
@@ -6154,8 +6243,12 @@ resolve_nameref(Param pm, const Asgment stop)
 		seek = refname;
 	}
     }
-    else if (pm && !(stop && (stop->flags & PM_NAMEREF)))
-	return (HashNode)pm;
+    else if (pm) {
+	if (!(stop && (stop->flags & PM_NAMEREF)))
+	    return (HashNode)pm;
+	if (!(pm->node.flags & PM_NAMEREF))
+	    return (pm->level < locallevel ? NULL : (HashNode)pm);
+    }
     if (seek) {
 	queue_signals();
 	/* pm->width is the offset of any subscript */
@@ -6293,10 +6386,9 @@ mod_export Param
 upscope(Param pm, int reflevel)
 {
     Param up = pm->old;
-    while (pm && up && up->level >= reflevel) {
+    while (up && up->level >= reflevel) {
 	pm = up;
-	if (up)
-	    up = up->old;
+	up = up->old;
     }
     return pm;
 }
@@ -6307,6 +6399,8 @@ valid_refname(char *val)
 {
     char *t = itype_end(val, INAMESPC, 0);
 
+    if (idigit(*val))
+	return 0;
     if (*t != 0) {
 	if (*t == '[') {
 	    tokenize(t = dupstring(t+1));

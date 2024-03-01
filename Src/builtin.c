@@ -2031,8 +2031,10 @@ typeset_single(char *cname, char *pname, Param pm, int func,
     char *subscript;
 
     if (pm && (pm->node.flags & PM_NAMEREF) && !((off|on) & PM_NAMEREF)) {
-	if (!(off & PM_NAMEREF))
-	    pm = (Param)resolve_nameref(pm, NULL);
+	if (!(off & PM_NAMEREF)) {
+	    if ((pm = (Param)resolve_nameref(pm, NULL)))
+		pname = pm->node.nam;
+	}
 	if (pm && (pm->node.flags & PM_NAMEREF) &&
 	    (on & ~(PM_NAMEREF|PM_LOCAL|PM_READONLY))) {
 	    /* Changing type of PM_SPECIAL|PM_AUTOLOAD is a fatal error.  *
@@ -2248,10 +2250,14 @@ typeset_single(char *cname, char *pname, Param pm, int func,
 	    zerrnam(cname, "%s: restricted", pname);
 	    return pm;
 	}
-	if ((pm->node.flags & PM_READONLY) &&
-	    (pm->node.flags & PM_NAMEREF & off)) {
-	    zerrnam(cname, "%s: read-only reference", pname);
-	    return pm;
+	if ((pm->node.flags & PM_READONLY) && !(off & PM_READONLY) &&
+	    /* It seems as though these checks should not be specific to
+	     * PM_NAMEREF, but changing that changes historic behavior */
+	    ((on & PM_NAMEREF) != (pm->node.flags & PM_NAMEREF) ||
+	     (asg && (pm->node.flags & PM_NAMEREF)))) {
+	    zerrnam(cname, "%s: read-only %s", pname,
+		    (pm->node.flags & PM_NAMEREF) ? "reference" : "variable");
+	    return NULL;
 	}
 	if ((on & PM_UNIQUE) && !(pm->node.flags & PM_READONLY & ~off)) {
 	    Param apm;
@@ -2693,7 +2699,7 @@ bin_typeset(char *name, char **argv, LinkList assigns, Options ops, int func)
 	    off |= bit;
     }
     if (OPT_MINUS(ops,'n')) {
-	if ((on & ~PM_READONLY)|off) {
+	if ((on|off) & ~PM_READONLY) {
 	    zwarnnam(name, "no other attributes allowed with -n");
 	    return 1;
 	}
@@ -3021,6 +3027,13 @@ bin_typeset(char *name, char **argv, LinkList assigns, Options ops, int func)
     /* With the -m option, treat arguments as glob patterns */
     if (OPT_ISSET(ops,'m')) {
 	if (!OPT_ISSET(ops,'p')) {
+	    if (on & PM_NAMEREF) {
+		/* It's generally unwise to mass-change the types of
+		 * parameters, but for namerefs it would be fatal */
+		unqueue_signals();
+		zerrnam(name, "invalid reference");
+		return 1;
+	    }
 	    if (!(on|roff))
 		printflags |= PRINT_TYPE;
 	    if (!on)
@@ -3104,13 +3117,25 @@ bin_typeset(char *name, char **argv, LinkList assigns, Options ops, int func)
 	    }
 	    if (hn) {
 		/* namerefs always start over fresh */
-		if (((Param)hn)->level >= locallevel) {
+		if (((Param)hn)->level >= locallevel ||
+		    (!(on & PM_LOCAL) && ((Param)hn)->level < locallevel)) {
 		    Param oldpm = (Param)hn;
-		    if (!asg->value.scalar && oldpm->u.str)
+		    if (!asg->value.scalar &&
+			PM_TYPE(oldpm->node.flags) == PM_SCALAR &&
+			oldpm->u.str)
 			asg->value.scalar = dupstring(oldpm->u.str);
-		    unsetparam_pm((Param)hn, 0, 1);
+		    /* Defer read-only error to typeset_single() */
+		    if (!(hn->flags & PM_READONLY))
+			unsetparam_pm(oldpm, 0, 1);
 		}
-		hn = NULL;
+		/* Passing a NULL pm to typeset_single() makes the
+		 * nameref read-only before assignment, which breaks
+		 *   typeset -rn ref=var
+		 * so this is special-cased to permit that action
+		 * like assign-at-create for other parameter types.
+		 */
+		if (!(hn->flags & PM_READONLY))
+		    hn = NULL;
 	    }
 	}
 
@@ -3400,16 +3425,16 @@ bin_functions(char *name, char **argv, Options ops, int func)
 	    newsh->sticky = sticky_emulation_dup(shf->sticky, 0);
 	/* is newsh a signal trap? (adapted from exec.c) */
 	if (!strncmp(s, "TRAP", 4)) {
-	    int signum = getsignum(s + 4);
-	    if (signum != -1) {
-		if (settrap(signum, NULL, ZSIG_FUNC)) {
+	    int sigidx = getsigidx(s + 4);
+	    if (sigidx != -1) {
+		if (settrap(sigidx, NULL, ZSIG_FUNC)) {
 		    freeeprog(newsh->funcdef);
 		    dircache_set(&newsh->filename, NULL);
 		    zfree(newsh, sizeof(*newsh));
 		    return 1;
 		}
 		/* Remove any old node explicitly */
-		removetrapnode(signum);
+		removetrapnode(sigidx);
 	    }
 	}
 	shfunctab->addnode(shfunctab, ztrdup(s), &newsh->node);
@@ -3688,15 +3713,15 @@ bin_functions(char *name, char **argv, Options ops, int func)
 		/* no flags, so just print */
 		printshfuncexpand(&shf->node, pflags, expand);
 	} else if (on & PM_UNDEFINED) {
-	    int signum = -1, ok = 1;
+	    int sigidx = -1, ok = 1;
 
 	    if (!strncmp(*argv, "TRAP", 4) &&
-		(signum = getsignum(*argv + 4)) != -1) {
+		(sigidx = getsigidx(*argv + 4)) != -1) {
 		/*
 		 * Because of the possibility of alternative names,
 		 * we must remove the trap explicitly.
 		 */
-		removetrapnode(signum);
+		removetrapnode(sigidx);
 	    }
 
 	    if (**argv == '/') {
@@ -3732,8 +3757,8 @@ bin_functions(char *name, char **argv, Options ops, int func)
 	    shfunc_set_sticky(shf);
 	    add_autoload_function(shf, *argv);
 
-	    if (signum != -1) {
-		if (settrap(signum, NULL, ZSIG_FUNC)) {
+	    if (sigidx != -1) {
+		if (settrap(sigidx, NULL, ZSIG_FUNC)) {
 		    shfunctab->removenode(shfunctab, *argv);
 		    shfunctab->freenode(&shf->node);
 		    returnval = 1;
@@ -4046,6 +4071,7 @@ bin_whence(char *nam, char **argv, Options ops, int func)
     /* Take arguments literally -- do not glob */
     queue_signals();
     for (; *argv; argv++) {
+	informed = 0;
 	if (!OPT_ISSET(ops,'p') && !allmatched) {
 	    char *suf;
 
@@ -5221,7 +5247,8 @@ bin_print(char *name, char **args, Options ops, int func)
 		    }
 		}
 		if (*argp) {
-		    width = (int)mathevali(*argp++);
+		    width = (int)mathevali(metafy(*argp, len[argp - args], META_USEHEAP));
+		    argp++;
 		    if (errflag) {
 			errflag &= ~ERRFLAG_ERROR;
 			ret = 1;
@@ -5255,7 +5282,8 @@ bin_print(char *name, char **args, Options ops, int func)
 		    }
 
 		    if (*argp) {
-			prec = (int)mathevali(*argp++);
+			prec = (int)mathevali(metafy(*argp, len[argp - args], META_USEHEAP));
+			argp++;
 			if (errflag) {
 			    errflag &= ~ERRFLAG_ERROR;
 			    ret = 1;
@@ -5439,7 +5467,7 @@ bin_print(char *name, char **args, Options ops, int func)
  		    	*d++ = 'l';
 #endif
 		    	*d++ = 'l', *d++ = *c, *d = '\0';
-			zlongval = (curarg) ? mathevali(curarg) : 0;
+			zlongval = (curarg) ? mathevali(metafy(curarg, curlen, META_HEAPDUP)) : 0;
 			if (errflag) {
 			    zlongval = 0;
 			    errflag &= ~ERRFLAG_ERROR;
@@ -5490,7 +5518,7 @@ bin_print(char *name, char **args, Options ops, int func)
 			if (!curarg)
 			    zulongval = (zulong)0;
 			else if (!zstrtoul_underscore(curarg, &zulongval))
-			    zulongval = mathevali(curarg);
+			    zulongval = mathevali(metafy(curarg, curlen, META_HEAPDUP));
 			if (errflag) {
 			    zulongval = 0;
 			    errflag &= ~ERRFLAG_ERROR;
@@ -6482,9 +6510,10 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
     } else
 	readfd = izle = 0;
 
-    if (OPT_ISSET(ops,'s') && SHTTY != -1) {
+    if (OPT_ISSET(ops,'s') && isatty(readfd)) {
 	struct ttyinfo ti;
-	gettyinfo(&ti);
+	memset(&ti, 0, sizeof(struct ttyinfo));
+	fdgettyinfo(readfd, &ti);
 	saveti = ti;
 	resettty = 1;
 #ifdef HAS_TIO
@@ -6492,7 +6521,7 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 #else
 	ti.sgttyb.sg_flags &= ~ECHO;
 #endif
-	settyinfo(&ti);
+	fdsettyinfo(readfd, &ti);
     }
 
     /* handle prompt */
@@ -6530,9 +6559,9 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
         delim = (unsigned char) ((delimstr[0] == Meta) ?
 			delimstr[1] ^ 32 : delimstr[0]);
 #endif
-	if (SHTTY != -1) {
+	if (isatty(readfd)) {
 	    struct ttyinfo ti;
-	    gettyinfo(&ti);
+	    fdgettyinfo(readfd, &ti);
 	    if (! resettty) {
 	      saveti = ti;
 	      resettty = 1;
@@ -6544,7 +6573,7 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 #else
 	    ti.sgttyb.sg_flags |= CBREAK;
 #endif
-	    settyinfo(&ti);
+	    fdsettyinfo(readfd, &ti);
 	}
     }
     if (OPT_ISSET(ops,'t')) {
@@ -6579,10 +6608,11 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 			   timeout)) {
 		if (keys && !zleactive && !isem)
 		    settyinfo(&shttyinfo);
-		else if (resettty && SHTTY != -1)
-		    settyinfo(&saveti);
+		else if (resettty)
+		    fdsettyinfo(readfd, &saveti);
 		if (haso) {
-		    fclose(shout);
+		    if (shout)
+			fclose(shout);
 		    shout = oshout;
 		    SHTTY = -1;
 		}
@@ -6690,8 +6720,8 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 	    /* dispose of result appropriately, etc. */
 	    if (isem)
 		while (val > 0 && read(SHTTY, &d, 1) == 1 && d != '\n');
-	    else {
-		settyinfo(&shttyinfo);
+	    else if (resettty) {
+		fdsettyinfo(readfd, &saveti);
 		resettty = 0;
 	    }
 	    if (haso) {
@@ -6720,8 +6750,8 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 	    setsparam(reply, metafy(buf, bptr - buf, META_REALLOC));
 	else
 	    zfree(buf, bptr - buf + 1);
-	if (resettty && SHTTY != -1)
-	    settyinfo(&saveti);
+	if (resettty)
+	    fdsettyinfo(readfd, &saveti);
 	return eof;
     }
 
@@ -6931,8 +6961,8 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 	    *pp++ = NULL;
 	    setaparam(reply, p);
 	}
-	if (resettty && SHTTY != -1)
-	    settyinfo(&saveti);
+	if (resettty)
+	    fdsettyinfo(readfd, &saveti);
 	return c == EOF;
     }
     buf = bptr = (char *)zalloc(bsiz = 64);
@@ -7060,8 +7090,8 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
 	    break;
     }
     *bptr = '\0';
-    if (resettty && SHTTY != -1)
-	settyinfo(&saveti);
+    if (resettty)
+	fdsettyinfo(readfd, &saveti);
     /* final assignment of reply, etc. */
     if (OPT_ISSET(ops,'e') || OPT_ISSET(ops,'E')) {
 	zputs(buf, stdout);
@@ -7316,7 +7346,7 @@ bin_trap(char *name, char **argv, UNUSED(Options ops), UNUSED(int func))
     /* If given no arguments, list all currently-set traps */
     if (!*argv) {
 	queue_signals();
-	for (sig = 0; sig < VSIGCOUNT; sig++) {
+	for (sig = 0; sig < TRAPCOUNT; sig++) {
 	    if (sigtrapped[sig] & ZSIG_FUNC) {
 		HashNode hn;
 
@@ -7342,13 +7372,13 @@ bin_trap(char *name, char **argv, UNUSED(Options ops), UNUSED(int func))
 
     /* If we have a signal number, unset the specified *
      * signals.  With only -, remove all traps.        */
-    if ((getsignum(*argv) != -1) || (!strcmp(*argv, "-") && argv++)) {
+    if ((getsigidx(*argv) != -1) || (!strcmp(*argv, "-") && argv++)) {
 	if (!*argv) {
-	    for (sig = 0; sig < VSIGCOUNT; sig++)
+	    for (sig = 0; sig < TRAPCOUNT; sig++)
 		unsettrap(sig);
 	} else {
 	    for (; *argv; argv++) {
-		sig = getsignum(*argv);
+		sig = getsigidx(*argv);
 		if (sig == -1) {
 		    zwarnnam(name, "undefined signal: %s", *argv);
 		    break;
@@ -7373,12 +7403,12 @@ bin_trap(char *name, char **argv, UNUSED(Options ops), UNUSED(int func))
 	Eprog t;
 	int flags;
 
-	sig = getsignum(*argv);
+	sig = getsigidx(*argv);
 	if (sig == -1) {
 	    zwarnnam(name, "undefined signal: %s", *argv);
 	    break;
 	}
-	if (idigit(**argv) ||
+	if (idigit(**argv) || (sig >= VSIGCOUNT) ||
 	    !strcmp(sigs[sig], *argv) ||
 	    (!strncmp("SIG", *argv, 3) && !strcmp(sigs[sig], *argv+3))) {
 	    /* The signal was specified by number or by canonical name (with

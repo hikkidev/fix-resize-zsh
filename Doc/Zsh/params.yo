@@ -672,9 +672,9 @@ of var(pname) in assignments and expansions instead assign to or
 expand var(rname).  This also applies to `tt(unset )var(pname)' and to
 most subsequent uses of `tt(typeset)' with the exception of
 `tt(typeset -n)' and `tt(typeset +n)', so to remove a named reference,
-use either `tt(unset -n )var(pname)' or one of:
+use either `tt(unset -n )var(pname)' (preferred) or one of:
 ifzman()
-example(tt(typeset -n )var(pname)
+example(tt(typeset -n )var(pname=)
 tt(typeset +n )var(pname))
 
 followed by
@@ -748,9 +748,13 @@ vindex(argv)
 item(tt(argv) <S> <Z>)(
 Same as tt(*).  Assigning to tt(argv) changes the local positional
 parameters, but tt(argv) is em(not) itself a local parameter.
-Deleting tt(argv) with tt(unset) in any function deletes it everywhere,
-although only the innermost positional parameter array is deleted (so
-tt(*) and tt(@) in other scopes are not affected).
+Deleting tt(argv) with tt(unset) in any function deletes it everywhere.
+This can be avoided by declaring `tt(local +h argv)' before unsetting.
+Even when not so declared, only the innermost positional parameter
+array is deleted (so tt(*) and tt(@) in other scopes are not affected).
+
+A named reference to tt(argv) em(does not) permit a called function to
+access the positional parameters of its caller.
 )
 vindex(@)
 item(tt(@) <S>)(
@@ -779,7 +783,10 @@ last pipeline.
 )
 vindex(_)
 item(tt(_) <S>)(
-The last argument of the previous command.
+Initially, if tt(_) exists in the environment, then this parameter is set to
+its value. This value may be the full pathname of the current zsh
+executable or the script command file.
+Later, this parameter is set to the last argument of the previous command.
 Also, this parameter is set in the environment of every command
 executed to the full pathname of the command.
 )
@@ -946,7 +953,10 @@ has index 1, the signals are offset by 1 from the signal number
 used by the operating system.  For example, on typical Unix-like systems
 tt(HUP) is signal number 1, but is referred to as tt($signals[2]).  This
 is because of tt(EXIT) at position 1 in the array, which is used
-internally by zsh but is not known to the operating system.
+internally by zsh but is not known to the operating system. On many systems
+there is a block of reserved or unused signal numbers before the POSIX
+real-time signals so the array index can't be used as an accurate indicator
+of their signal number. Use, for example, tt(kill -l SIGRTMIN) instead.
 )
 vindex(TRY_BLOCK_ERROR)
 item(tt(TRY_BLOCK_ERROR) <S>)(
@@ -1108,6 +1118,10 @@ vindex(ZSH_EXECUTION_STRING)
 item(tt(ZSH_EXECUTION_STRING))(
 If the shell was started with the option tt(-c), this contains
 the argument passed to the option.  Otherwise it is not set.
+)
+vindex(ZSH_EXEPATH)
+item(tt(ZSH_EXEPATH))(
+Full pathname of the executable file of the current zsh process.
 )
 vindex(ZSH_NAME)
 item(tt(ZSH_NAME))(
@@ -1318,15 +1332,18 @@ Internal field separators (by default space, tab, newline and NUL), that
 are used to separate words which result from
 command or parameter expansion and words read by
 the tt(read) builtin.  Any characters from the set space, tab and
-newline that appear in the IFS are called em(IFS white space).
+newline that appear in the tt(IFS) are called em(IFS white space).
 One or more IFS white space characters or one non-IFS white space
 character together with any adjacent IFS white space character delimit
 a field.  If an IFS white space character appears twice consecutively
-in the IFS, this character is treated as if it were not an IFS white
+in the tt(IFS), this character is treated as if it were not an IFS white
 space character.
 
 If the parameter is unset, the default is used.  Note this has
 a different effect from setting the parameter to an empty string.
+
+If tt(MULTIBYTE) option is on and tt(IFS) contains invalid characters in
+the current locale, it is reset to the default.
 )
 vindex(KEYBOARD_HACK)
 item(tt(KEYBOARD_HACK))(
@@ -1621,9 +1638,13 @@ All other prompt escapes are also allowed.
 
 The actions available at the prompt are tt([nyae]):
 startsitem()
-sitem(tt(n) +LPAR()`no'+RPAR() +LPAR()default+RPAR())(Discard the correction and run the command.)
-sitem(tt(y) +LPAR()`yes'+RPAR())(Make the correction and run the command.)
-sitem(tt(a) +LPAR()`abort'+RPAR())(Discard the entire command line without running it.)
+sitem(tt(n) +LPAR()`no'+RPAR() +LPAR()default+RPAR())(Discard the correction.
+If there are no more corrections, accept the command line, else (with
+tt(CORRECT_ALL)) prompt for the next.)
+sitem(tt(y) +LPAR()`yes'+RPAR())(Make the correction. If there are no more
+corrections, accept the command line.)
+sitem(tt(a) +LPAR()`abort'+RPAR())(Place the entire command line in the
+history for later edit, but without accepting it.)
 sitem(tt(e) +LPAR()`edit'+RPAR())(Resume editing the command line.)
 endsitem()
 )

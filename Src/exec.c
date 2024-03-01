@@ -519,7 +519,7 @@ zexecve(char *pth, char **argv, char **newenvp)
     if (*pth == '/')
 	strcpy(buf + 2, pth);
     else
-	sprintf(buf + 2, "%s/%s", pwd, pth);
+	sprintf(buf + 2, "%s/%s", unmeta(pwd), pth);
     zputenv(buf);
 #ifndef FD_CLOEXEC
     closedumps();
@@ -551,7 +551,7 @@ zexecve(char *pth, char **argv, char **newenvp)
 			    break;
 		    if (t0 == ct)
 			zerr("%s: bad interpreter: %s: %e", pth,
-			     execvebuf + 2, eno);
+			     metafy(execvebuf + 2, -1, META_STATIC), eno);
 		    else {
 			while (inblank(execvebuf[t0]))
 			    execvebuf[t0--] = '\0';
@@ -574,8 +574,8 @@ zexecve(char *pth, char **argv, char **newenvp)
 				    execve(pprog, argv - 2, newenvp);
 				}
 			    }
-			    zerr("%s: bad interpreter: %s: %e", pth, ptr2,
-				 eno);
+			    zerr("%s: bad interpreter: %s: %e", pth,
+				 metafy(ptr2, -1, META_STATIC), eno);
 			} else if (*ptr) {
 			    *ptr = '\0';
 			    argv[-2] = ptr2;
@@ -612,9 +612,22 @@ zexecve(char *pth, char **argv, char **newenvp)
                         }
                     }
 		    if (!isbinary) {
-			argv[-1] = "sh";
+		        char** args = argv;
+			if (argv[0][0] == '-' || argv[0][0] == '+') {
+			    /*
+			     * guard against +foo or -bar script paths being
+			     * taken as options. POSIX says the script path
+			     * must be passed as an *operand*. "--" would also
+			     * make sure the next argument is treated as an
+			     * operand with POSIX compliant sh implementations
+			     * but "-" is more portable (to the Bourne shell in
+			     * particular) and shorter.
+			     */
+			    *--args = "-";
+			}
+			*--args = "sh";
 			winch_unblock();
-			execve("/bin/sh", argv - 1, newenvp);
+			execve("/bin/sh", args, newenvp);
 		    }
 		}
 	    } else
@@ -1491,7 +1504,7 @@ execlist(Estate state, int dont_change_job, int exiting)
 		 * we find a sublist followed by ORNEXT.                   */
 		if ((ret = ((WC_SUBLIST_FLAGS(code) & WC_SUBLIST_SIMPLE) ?
 			    execsimple(state) :
-			    execpline(state, code, Z_SYNC, 0)))) {
+			    execpline(state, code, Z_SYNC, 0))) || breaks) {
 		    state->pc = next;
 		    code = *state->pc++;
 		    next = state->pc + WC_SUBLIST_SKIP(code);
@@ -1524,7 +1537,7 @@ execlist(Estate state, int dont_change_job, int exiting)
 		 * we find a sublist followed by ANDNEXT.              */
 		if (!(ret = ((WC_SUBLIST_FLAGS(code) & WC_SUBLIST_SIMPLE) ?
 			     execsimple(state) :
-			     execpline(state, code, Z_SYNC, 0)))) {
+			     execpline(state, code, Z_SYNC, 0))) || breaks) {
 		    state->pc = next;
 		    code = *state->pc++;
 		    next = state->pc + WC_SUBLIST_SKIP(code);
@@ -2290,6 +2303,8 @@ closemn(struct multio **mfds, int fd, int type)
 	    return;
 	}
 	/* pid == 0 */
+	opts[INTERACTIVE] = 0;
+	dont_queue_signals();
 	child_unblock();
 	closeallelse(mn);
 	if (mn->rflag) {
@@ -2302,19 +2317,21 @@ closemn(struct multio **mfds, int fd, int type)
 			break;
 		}
 		for (i = 0; i < mn->ct; i++)
-		    write_loop(mn->fds[i], buf, len);
+		    if (write_loop(mn->fds[i], buf, len) < 0)
+			break;
 	    }
 	} else {
 	    /* cat process */
 	    for (i = 0; i < mn->ct; i++)
 		while ((len = read(mn->fds[i], buf, TCBUFSIZE)) != 0) {
 		    if (len < 0) {
-			if (errno == EINTR)
+			if (errno == EINTR && !isatty(mn->fds[i]))
 			    continue;
 			else
 			    break;
 		    }
-		    write_loop(mn->pipe, buf, len);
+		    if (write_loop(mn->pipe, buf, len) < 0)
+			break;
 		}
 	}
 	_exit(0);
@@ -2388,7 +2405,7 @@ addfd(int forked, int *save, struct multio **mfds, int fd1, int fd2, int rflag,
 	/* fd will be over 10, don't touch mfds */
 	fd1 = movefd(fd2);
 	if (fd1 == -1) {
-	    zerr("cannot moved fd %d: %e", fd2, errno);
+	    zerr("cannot move fd %d: %e", fd2, errno);
 	    return;
 	} else {
 	    fdtable[fd1] = FDT_EXTERNAL;
@@ -3751,7 +3768,7 @@ execcmd_exec(Estate state, Execcmd_params eparams,
 		addfd(forked, save, mfds, fn->fd1, fil, 0, fn->varid);
 		/* If this is 'exec < file', read from stdin, *
 		 * not terminal, unless `file' is a terminal. */
-		if (nullexec == 1 && fn->fd1 == 0 &&
+		if (nullexec == 1 && fn->fd1 == 0 && !fn->varid &&
 		    isset(SHINSTDIN) && interact && !zleactive)
 		    init_io(NULL);
 		break;
@@ -4897,7 +4914,6 @@ getoutputfile(char *cmd, char **eptr)
 
     if ((fd = open(nam, O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY, 0600)) < 0) {
 	zerr("process substitution failed: %e", errno);
-	free(nam);
 	if (!s)
 	    child_unblock();
 	return NULL;
@@ -5097,7 +5113,7 @@ getpipe(char *cmd, int nullexec)
 	procsubstpid = pid;
 	return pipes[!out];
     }
-    entersubsh(ESUB_ASYNC|ESUB_PGRP, NULL);
+    entersubsh(ESUB_ASYNC|ESUB_PGRP|ESUB_NOMONITOR, NULL);
     redup(pipes[out], out);
     closem(FDT_UNUSED, 0);	/* this closes pipes[!out] as well */
     cmdpush(CS_CMDSUBST);
@@ -5411,7 +5427,7 @@ execfuncdef(Estate state, Eprog redir_prog)
 	} else {
 	    /* is this shell function a signal trap? */
 	    if (!strncmp(s, "TRAP", 4) &&
-		(signum = getsignum(s + 4)) != -1) {
+		(signum = getsigidx(s + 4)) != -1) {
 		if (settrap(signum, NULL, ZSIG_FUNC)) {
 		    freeeprog(shf->funcdef);
 		    dircache_set(&shf->filename, NULL);
@@ -5779,12 +5795,25 @@ doshfunc(Shfunc shfunc, LinkList doshargs, int noreturnval)
     char *name = shfunc->node.nam;
     int flags = shfunc->node.flags;
     char *fname = dupstring(name);
-    Eprog prog;
+    Eprog prog, marked_prog;
     static int oflags;
     static int funcdepth;
     Heap funcheap;
 
     queue_signals();	/* Lots of memory and global state changes coming */
+    /*
+     * In case this is a special function such as a trap, mark it
+     * as in use right now, so it doesn't get freed early.  The
+     * worst that can happen is this hangs around in memory a little
+     * longer than strictly needed.
+     *
+     * Classic example of this happening is running TRAPEXIT directly.
+     *
+     * Because the shell function's contents may change, we'll ensure
+     * we use a consistent structure for use / free.
+     */
+    marked_prog = shfunc->funcdef;
+    useeprog(marked_prog);
 
     NEWHEAPS(funcheap) {
 	/*
@@ -5816,6 +5845,22 @@ doshfunc(Shfunc shfunc, LinkList doshargs, int noreturnval)
 	    size_t bytes = sizeof(int)*numpipestats;
 	    funcsave->pipestats = (int *)zhalloc(bytes);
 	    memcpy(funcsave->pipestats, pipestats, bytes);
+	}
+
+	if (!strcmp(fname, "TRAPEXIT")) {
+	    /*
+	     * If we are executing TRAPEXIT directly, starttrapscope()
+	     * will pull the rug out from under us to ensure the
+	     * exit trap isn't run inside the function.  We just need
+	     * the information locally here, so copy it on the heap.
+	     *
+	     * The funcdef is separately handled by reference counting.
+	     */
+	    Shfunc shcopy = (Shfunc)zhalloc(sizeof(struct shfunc));
+	    memcpy(shcopy, shfunc, sizeof(struct shfunc));
+	    shcopy->node.nam = dupstring(shfunc->node.nam);
+	    shfunc = shcopy;
+	    name = shfunc->node.nam;
 	}
 
 	starttrapscope();
@@ -5942,6 +5987,8 @@ doshfunc(Shfunc shfunc, LinkList doshargs, int noreturnval)
 	funcsave->fstack.filename = getshfuncfile(shfunc);
 
 	prog = shfunc->funcdef;
+	DPUTS1(!prog->nref, "function definition %s has zero reference count",
+	       (fname && *fname) ? fname : "<anon>");
 	if (prog->flags & EF_RUN) {
 	    Shfunc shf;
 
@@ -6046,6 +6093,7 @@ doshfunc(Shfunc shfunc, LinkList doshargs, int noreturnval)
 	}
     } OLDHEAPS;
 
+    freeeprog(marked_prog);
     unqueue_signals();
 
     /*

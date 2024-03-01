@@ -34,6 +34,24 @@ details, see the documentation.
 Incompatibilities since 5.9
 ---------------------------
 
+The line editor's default keymap is now the "emacs" keymap regardless of the
+value of the environment variables $VISUAL and $EDITOR.  This only affects you
+if your $VISUAL or $EDITOR environment variable is set to a value that
+contains the string "vi".  To get the previous behaviour, add
+
+    bindkey -v
+
+or, if your $VISUAL and $EDITOR environment variables vary,
+
+    if [[ ${VISUAL} == *vi* || ${EDITOR} == *vi* ]]; then
+        bindkey -v
+    else
+        bindkey -e
+    fi
+
+to your .zshrc file.  These snippets are compatible with previous
+versions of the shell.
+
 The ERR_EXIT and ERR_RETURN options were refined to be more self-
 consistent and better aligned with the POSIX-2017 specification of
 `set -e`:
@@ -78,6 +96,37 @@ consistent and better aligned with the POSIX-2017 specification of
       setopt ERR_RETURN
       f() { { false; echo "This is printed only since 5.10." } || true }
       if f; then true; fi
+
+PCRE support is now PCRE2.
+
+Parameter names may begin with a "." and follow a relaxed implementation
+of ksh namespace syntax.  Expansion of such parameters must use braces,
+that is, in ${.param.name} form.  Parameters so named are excluded from
+`typeset` and `set` output unless explicitly listed in `typeset` arguments
+or matched by a pattern with `typeset -m`.
+
+Interpretation of exclusion-patterns following alternation-patterns has
+been rationalised.  This means for example that `[[ ab = (|a*)~^(*b) ]]`
+is true where previously it was false.
+
+Improvements to handling of terminal colors and attributes in prompts
+may change the behavior of some prompt sequences, most notably in
+cases where `esq=${(%)...}` is used to capture an escape sequence.
+
+The `which` and `functions` commands output function definitions in a
+format independent of the MULTI_FUNC_DEF option.
+
+Math context no longer interprets a leading underscore as part of a
+numeric constant.
+
+Nul and characters greater than \x77 are correctly handled by `read -d`.
+
+Return values of `sysopen` from the zsh/system module have been updated
+to be more similar to other commands in that module.
+
+Tied parameters created with the zsh/db/gdbm module may not be re-tied
+as locals in nested function scope.  This prevents database corruption
+when a function scope ends.
 
 Incompatibilities between 5.8.1 and 5.9
 ---------------------------------------

@@ -376,7 +376,7 @@ If the tt(-p) flag is given, the following string will be taken as
 the prompt to display at the left.  If the tt(-r) flag is given,
 the following string gives the prompt to display at the right.  If the
 tt(-h) flag is specified, the history can be accessed from ZLE. If the
-tt(-e) flag is given, typing tt(^D) (Control-D) on an empty line
+tt(-e) flag is given, typing tt(^D) (Control-D) in an empty buffer
 causes tt(vared) to exit immediately with a non-zero return value.
 
 The tt(-M) option gives a keymap to link to the tt(main) keymap during
@@ -2806,6 +2806,17 @@ case whitespace will not be highlighted.
 item(tt(italic))(
 The characters in the given context are shown in a italic font.
 Not all terminals support italic fonts.
+)
+item(tt(hl=)var(group))(
+Use the specified highlighting group.  The var(group) is used as a key into
+the associative array tt(.zle.hlgroups) to determine the actual highlighting.
+)
+item(tt(layer=)var(layer))(
+The layer is used to determine precedence when multiple highlighting regions
+overlap. The var(layer) is a decimal integer, with higher numbers taking
+precedence over lower numbers. The default layer is 10 with 30 used as the
+default for tt(special), 20 for tt(region) and tt(isearch) and 15 for
+tt(paste).
 )
 enditem()
 

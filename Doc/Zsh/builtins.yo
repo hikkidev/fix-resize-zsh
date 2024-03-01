@@ -683,6 +683,7 @@ the same as if the commands had been executed directly by the shell;
 if there are no var(args) or they contain no commands (i.e. are
 an empty string or whitespace) the return status is zero.
 )
+findex(exec)
 item(tt(exec) [ tt(-cl) ] [ tt(-a) var(argv0) ] [ var(command) [ var(arg) ... ] ])(
 Replace the current shell with var(command) rather than forking.
 If var(command) is a shell builtin command or a shell function,
@@ -1142,8 +1143,9 @@ findex(kill)
 cindex(killing jobs)
 cindex(jobs, killing)
 xitem(tt(kill) [ tt(-s) var(signal_name) | tt(-n) var(signal_number) | \
-tt(-)var(sig) ] var(job) ...)
-item(tt(kill) tt(-l) [ var(sig) ... ])(
+tt(-)var(sig) ] [ tt(-q) var(value) ] var(job) ...)
+xitem(tt(kill) tt(-l) [ var(sig) ... ])
+item(tt(kill) tt(-L))(
 Sends either tt(SIGTERM) or the specified signal to the given
 jobs or processes.
 Signals are given by number or by names, with or without the `tt(SIG)'
@@ -1157,7 +1159,8 @@ specified the signal names are listed.  Otherwise, for each
 var(sig) that is a name, the corresponding signal number is
 listed.  For each var(sig) that is a signal number or a number
 representing the exit status of a process which was terminated or
-stopped by a signal the name of the signal is printed.
+stopped by a signal the name of the signal is printed.  The final
+form with tt(-L) lists each signal name with its corresponding number.
 
 On some systems, alternative signal names are allowed for a few signals.
 Typical examples are tt(SIGCHLD) and tt(SIGCLD) or tt(SIGPOLL) and
@@ -1169,6 +1172,9 @@ tt(kill -IO) and tt(kill -POLL) have the same effect.
 
 Many systems will allow process IDs to be negative to kill a process
 group or zero to kill the current process group.
+
+The tt(-q) option allows an integer value to be sent with the signal
+on systems that support tt(sigqueue+LPAR()RPAR()).
 )
 findex(let)
 item(tt(let) var(arg) ...)(
@@ -1633,6 +1639,7 @@ cancels both tt(-p) and tt(-u).
 
 The tt(-c) or tt(-l) flags cancel any and all of tt(-kpquz).
 )
+findex(readonly)
 cindex(parameters, marking readonly)
 item(tt(readonly))(
 Same as tt(typeset -r).  With the tt(POSIX_BUILTINS) option set, same
@@ -1644,7 +1651,9 @@ cindex(functions, returning from)
 item(tt(return) [ var(n) ])(
 Causes a shell function or `tt(.)' script to return to
 the invoking script with the return status specified by
-an arithmetic expression var(n).  
+an arithmetic expression var(n).  Also causes a non-interctive
+shell to exit, allowing files containing shell code to be used
+both as scripts and as autoloadable shell functions.
 For example, the following prints `tt(42)':
 
 example(() { integer foo=40; return "foo + 2" }
@@ -1924,8 +1933,8 @@ redef(SPACES)(0)(tt(ifztexi(NOTRANS(@ @ @ @ @ @ @ @ ))ifnztexi(        )))
 xitem(tt(typeset )[ {tt(PLUS())|tt(-)}tt(AHUaghlmrtux) ] \
 [ {tt(PLUS())|tt(-)}tt(EFLRZip) [ var(n) ] ])
 xitem(SPACES()[ tt(+) ] [ var(name)[tt(=)var(value)] ... ])
-xitem(tt(typeset )[ {tt(PLUS())|tt(-)}tt(n) ] \
-[ tt(-gr) ] [ var(name)[tt(=)var(value)] ... ])
+xitem(tt(typeset ){tt(PLUS())|tt(-)}tt(n) [ tt(-g) ] \
+[ {tt(PLUS())|tt(-)}tt(r) ] [ var(name)[tt(=)var(value)] ... ])
 xitem(tt(typeset )tt(-T) [ {tt(PLUS())|tt(-)}tt(Uglrux) ] [ {tt(PLUS())|tt(-)}tt(LRZp) [ var(n) ] ])
 xitem(SPACES()[ tt(+) | var(SCALAR)[tt(=)var(value)] var(array)[tt(=LPAR())var(value) ...tt(RPAR())] [ var(sep) ] ])
 item(tt(typeset) tt(-f) [ {tt(PLUS())|tt(-)}tt(TUkmtuz) ] [ tt(+) ] [ var(name) ... ])(
@@ -2060,6 +2069,11 @@ function unless `tt(-g -n)' is specified, and any local parameter (of
 any type) with the same var(name) supplants a named reference from a
 surrounding scope.
 
+A scalar parameter, including an existing named reference, may be
+converted to a new named reference by `tt(typeset -n )var(name)', so
+the `tt(-p)' option must be included to display the value of a
+specific named reference var(name).
+
 If no attribute flags are given, and either no var(name) arguments are
 present or the flag tt(+m) is used, then each parameter name printed is
 preceded by a list of the attributes of that parameter (tt(array),
@@ -2104,7 +2118,8 @@ is not used in this case).
 
 If the tt(+g) flag is combined with tt(-m), a new local parameter is
 created for every matching parameter that is not already local.  Otherwise
-tt(-m) applies all other flags or assignments to the existing parameters.
+tt(-m) applies all other flags or assignments to the existing parameters,
+except that the tt(-n) option cannot create named references in this way.
 
 Except when assignments are made with var(name)tt(=)var(value), using
 tt(+m) forces the matching parameters and their attributes to be printed,
@@ -2123,6 +2138,14 @@ tt(-p) may be followed by an optional integer argument.  Currently
 only the value tt(1) is supported.  In this case arrays and associative
 arrays are printed with newlines between indented elements for
 readability.
+
+The names and values of readonly special parameters
+(most of the parameters marked `<S>' in
+ifzman(zmanref(zshparam))ifnzman(noderef(Parameters Set By The Shell)),
+except those documented as settable)
+are not printed with `tt(-)tt(p)' because to execute those typeset commands
+would cause errors.  However, these parameters are printed when they
+have been made local to the scope where `tt(typeset -p)' is run.
 )
 item(tt(-T) [ var(scalar)[tt(=)var(value)] var(array)[tt(=LPAR())var(value) ...tt(RPAR())] [ var(sep) ] ])(
 This flag has a different meaning when used with tt(-f); see below.
@@ -2314,8 +2337,10 @@ readonly). Special variables that have been made readonly retain their value
 and readonly attribute when made local.
 )
 item(tt(-t))(
-Tags the named parameters.  Tags have no special meaning to the shell.
-This flag has a different meaning when used with tt(-f); see above.
+Tags the named parameters.  Tags only exist to flag the parameter for
+the user's own purposes --- the list of tagged parameters can be queried
+using `tt(typeset -t)'.  Tags have no other use.  Note that the tt(-t)
+flag has a different meaning when used with tt(-f); see above.
 )
 item(tt(-u))(
 Convert the result to upper case whenever the parameter is expanded.
@@ -2405,6 +2430,7 @@ the mask is printed as an octal number.  Note that in
 the symbolic form the permissions you specify are those which are to be
 allowed (not denied) to the users specified.
 )
+findex(unalias)
 cindex(aliases, removing)
 item(tt(unalias) [ tt(-ams) ] var(name) ...)(
 Removes aliases.  This command works the same as tt(unhash -a), except that

@@ -246,6 +246,9 @@ loop(int toplevel, int justonce)
 
 static int restricted;
 
+/* original argv[0]. This is already metafied */
+static char *argv0;
+
 /**/
 static void
 parseargs(char *zsh_name, char **argv, char **runscript, char **cmdptr,
@@ -257,7 +260,7 @@ parseargs(char *zsh_name, char **argv, char **runscript, char **cmdptr,
     if (**argv == '-')
 	flags |= PARSEARGS_LOGIN;
 
-    argzero = posixzero = *argv++;
+    argv0 = argzero = posixzero = *argv++;
     SHIN = 0;
 
     /*
@@ -697,11 +700,14 @@ init_io(char *cmd)
      * process group leader.
      */
     mypid = (zlong)getpid();
-    if (opts[MONITOR] && (SHTTY != -1)) {
-	origpgrp = GETPGRP();
-        acquire_pgrp(); /* might also clear opts[MONITOR] */
-    } else
-	opts[MONITOR] = 0;
+    if (opts[MONITOR]) {
+	if (SHTTY == -1)
+	    opts[MONITOR] = 0;
+	else if (!origpgrp) {
+	    origpgrp = GETPGRP();
+	    acquire_pgrp(); /* might also clear opts[MONITOR] */
+	}
+    }
 #else
     opts[MONITOR] = 0;
 #endif
@@ -891,6 +897,106 @@ init_term(void)
 	}
     }
     return 1;
+}
+
+/*
+ * Get (or guess) the absolute pathname of the current zsh exeutable.
+ * Try OS-specific method, and if it fails, guess the absolute pathname
+ * from argv0, pwd, and PATH. 'name' and 'cwd' are unmetefied versions of
+ * argv0 and pwd.
+ * Returns a zalloc()ed string (not metafied), or NULL if failed.
+ */
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
+/**/
+static char *
+getmypath(const char *name, const char *cwd)
+{
+    char *buf;
+    int namelen;
+
+    if (!name)
+	return NULL;
+    if (*name == '-')
+	++name;
+    if ((namelen = strlen(name)) == 0)
+	return NULL;
+#if defined(__APPLE__)
+    {
+	uint32_t n = PATH_MAX;
+	int ret;
+	buf = (char *)zalloc(PATH_MAX);
+	if ((ret = _NSGetExecutablePath(buf, &n)) < 0) {
+	    /* try again with increased buffer size */
+	    buf = (char *)zrealloc(buf, n);
+	    ret = _NSGetExecutablePath(buf, &n);
+	}
+	if (ret == 0 && strlen(buf) > 0)
+	    return buf;
+	else
+	    free(buf);
+    }
+#elif defined(PROC_SELF_EXE)
+    {
+	ssize_t n;
+	buf = (char *)zalloc(PATH_MAX);
+	n = readlink(PROC_SELF_EXE, buf, PATH_MAX);
+	if (n > 0 && n < PATH_MAX) {
+	    buf[n] = '\0';
+	    return buf;
+	}
+	else
+	    free(buf);
+    }
+#endif
+    /* guess the absolute pathname of 'name' */
+    if (name[namelen-1] == '/')    /* name should not end with '/' */
+	return NULL;
+    else if (name[0] == '/') {
+	/* name is already an absolute pathname */
+	return ztrdup(name);
+    }
+    else if (strchr(name, '/')) {
+	/* relative path */
+	if (!cwd)
+	    return NULL;
+	buf = (char *)zalloc(strlen(cwd) + namelen + 2);
+	sprintf(buf, "%s/%s", cwd, name);
+	return buf;
+    }
+#ifdef HAVE_REALPATH
+    else {
+	/* search each dir in PARH */
+	const char *path, *sep;
+	char *real, *try;
+	int pathlen, dirlen;
+
+	path = getenv("PATH");
+	if (!path || (pathlen = strlen(path)) == 0)
+	    return NULL;
+	/* for simplicity, allocate buf even if REALPATH_ACCEPTS_NULL is on */
+	buf = (char *)zalloc(PATH_MAX);
+	try = (char *)zalloc(pathlen + namelen + 2);
+	do {
+	    sep = strchr(path, ':');
+	    dirlen = sep ? sep - path : strlen(path);
+	    strncpy(try, path, dirlen);
+	    try[dirlen] = '/';
+	    try[dirlen+1] = '\0';
+	    strcat(try, name);
+	    real = realpath(try, buf);
+	    if (sep)
+		path = sep + 1;
+	} while (!real && sep);
+	free(try);
+	if (!real)
+	    free(buf);
+	return real;	/* this may be NULL */
+    }
+#endif
+    return NULL;
 }
 
 /* Initialize lots of global variables and hash tables */
@@ -1084,9 +1190,12 @@ setupvals(char *cmd, char *runscript, char *zsh_name)
 	ztrdup(DEFAULT_IFS_SH) : ztrdup(DEFAULT_IFS);
     wordchars   = ztrdup(DEFAULT_WORDCHARS);
     postedit    = ztrdup("");
-    zunderscore  = (char *) zalloc(underscorelen = 32);
-    underscoreused = 1;
-    *zunderscore = '\0';
+    /* If _ is set in environment then initialize our $_ by copying it */
+    zunderscore = getenv("_");
+    zunderscore = zunderscore ? metafy(zunderscore, -1, META_DUP) : ztrdup("");
+    underscoreused = strlen(zunderscore) + 1;
+    underscorelen = (underscoreused + 31) & ~31;
+    zunderscore = (char *)zrealloc(zunderscore, underscorelen);
 
     zoptarg = ztrdup("");
     zoptind = 1;
@@ -1106,8 +1215,8 @@ setupvals(char *cmd, char *runscript, char *zsh_name)
 #ifdef USE_GETPWUID
     if ((pswd = getpwuid(cached_uid))) {
 	if (EMULATION(EMULATE_ZSH))
-	    home = metafy(pswd->pw_dir, -1, META_DUP);
-	cached_username = ztrdup(pswd->pw_name);
+	    home = ztrdup_metafy(pswd->pw_dir);
+	cached_username = ztrdup_metafy(pswd->pw_name);
     }
     else
 #endif /* USE_GETPWUID */
@@ -1192,6 +1301,18 @@ setupvals(char *cmd, char *runscript, char *zsh_name)
     /* Colour sequences for outputting colours in prompts and zle */
     set_default_colour_sequences();
 
+    /* ZSH_EXEPATH */
+    {
+	char *mypath, *exename, *cwd;
+	exename = unmetafy(ztrdup(argv0), NULL);
+	cwd = pwd ? unmetafy(ztrdup(pwd), NULL) : NULL;
+	mypath = getmypath(exename, cwd);
+	free(exename);
+	free(cwd);
+	if (mypath) {
+	    setsparam("ZSH_EXEPATH", metafy(mypath, -1, META_REALLOC));
+	}
+    }
     if (cmd)
 	setsparam("ZSH_EXECUTION_STRING", ztrdup(cmd));
     if (runscript)
@@ -1261,6 +1382,9 @@ setupshin(char *runscript)
 void
 init_signals(void)
 {
+    sigtrapped = (int *) hcalloc(TRAPCOUNT * sizeof(int));
+    siglists = (Eprog *) hcalloc(TRAPCOUNT * sizeof(Eprog));
+
     if (interact) {
 	int i;
 	signal_setmask(signal_mask(0));
